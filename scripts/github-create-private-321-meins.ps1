@@ -19,8 +19,14 @@ if (-not (Test-Path $git)) { $git = "git" }
 
 Set-Location $ProjectRoot
 
+# gh schreibt bei Fehler auf stderr; mit "Stop" wuerde das sonst abbrechen
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
 $null = gh auth status -h github.com 2>&1
-if (-not $?) {
+$authOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEap
+
+if (-not $authOk) {
     Write-Host "Fehler: Bei GitHub ist noch niemand angemeldet." -ForegroundColor Red
     Write-Host "Bitte zuerst ausfuehren:  gh auth login" -ForegroundColor Yellow
     exit 1
