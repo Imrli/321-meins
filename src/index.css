@@ -1,0 +1,227 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --color-brand-50: #eef3f8;
+  --color-brand-100: #d8e3ee;
+  --color-brand-200: #b1c5dc;
+  --color-brand-300: #7e9dbd;
+  --color-brand-400: #4a7099;
+  --color-brand-500: #2e527a;
+  --color-brand-600: #223d5b;
+  --color-brand-700: #1a2a3a;
+  --color-brand-800: #121e2a;
+  --color-brand-900: #0a131c;
+
+  --color-accent-50: #fef4ea;
+  --color-accent-100: #fde3c7;
+  --color-accent-200: #fbc689;
+  --color-accent-300: #f3a655;
+  --color-accent-400: #ec8c35;
+  --color-accent-500: #e67e22;
+  --color-accent-600: #c96717;
+  --color-accent-700: #a25213;
+  --color-accent-800: #7a3e0f;
+
+  --color-ink: #0f172a;
+  --color-muted: #64748b;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f7f9fc;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  section[id] {
+    scroll-margin-top: 88px;
+  }
+
+  .wheel-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-surface-alt);
+    color: var(--color-ink);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  *::selection {
+    background-color: var(--color-accent-500);
+    color: white;
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+
+  .bg-radial-fade {
+    background: radial-gradient(
+      1200px 600px at 50% -10%,
+      rgba(230, 126, 34, 0.25),
+      transparent 60%
+    );
+  }
+
+  .mask-fade-b {
+    mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+  }
+
+  /**
+   * Primär-Aktionen: Lichtbalken L → R bei Hover (Desktop) bzw. :active (Touch).
+   * Gemeinsam mit .btn-primary-321 (Supabase-/Kunden-Routen).
+   */
+  .btn-action-shine,
+  .btn-primary-321 {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+
+  .btn-action-shine::before,
+  .btn-primary-321::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 55%;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.3) 50%,
+      transparent 100%
+    );
+    transform: translateX(-130%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .btn-action-shine.inline-flex > *,
+  .btn-action-shine.flex > *,
+  .btn-primary-321 > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  @media (hover: hover) {
+    .btn-action-shine:hover:not(:disabled)::before,
+    .btn-primary-321:hover:not(:disabled)::before {
+      animation: btn-action-shine-sweep 0.65s ease-in-out;
+    }
+  }
+
+  .btn-action-shine:focus-visible:not(:disabled)::before,
+  .btn-primary-321:focus-visible:not(:disabled)::before {
+    animation: btn-action-shine-sweep 0.65s ease-in-out;
+  }
+
+  @media (hover: none) {
+    .btn-action-shine:active:not(:disabled)::before,
+    .btn-primary-321:active:not(:disabled)::before {
+      animation: btn-action-shine-sweep 0.65s ease-in-out;
+    }
+  }
+
+  .btn-action-shine:disabled::before,
+  .btn-primary-321:disabled::before {
+    content: none;
+  }
+
+  .btn-primary-321 {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    border: none;
+    background-color: var(--color-accent-500);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    padding: 0.75rem 1.5rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .btn-primary-321:hover:not(:disabled) {
+    background-color: var(--color-accent-600);
+  }
+
+  .btn-primary-321:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes livePulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(34, 197, 94, 0);
+  }
+}
+
+@keyframes bidTick {
+  0% {
+    transform: translateY(-6px);
+    opacity: 0;
+  }
+  20%,
+  80% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+}
+
+.anim-fade-up {
+  animation: fadeUp 0.6s ease-out both;
+}
+
+.anim-live {
+  animation: livePulse 1.8s ease-out infinite;
+}
+
+.anim-bid {
+  animation: bidTick 3s ease-in-out infinite;
+}
+
+@keyframes btn-action-shine-sweep {
+  0% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(240%);
+  }
+}
