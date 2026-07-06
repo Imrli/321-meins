@@ -17,8 +17,8 @@ export interface Profil {
 export interface Auftrag {
   id: string;
   kunde_id: string;
-  /** z. B. Möbel, Paletten, Kühlgut */
-  transport_art: string;
+  /** z. B. Möbel, Paletten – Mock-Legacy; Supabase nutzt dienstleistung_typ */
+  dienstleistung_typ: string;
   beschreibung: string | null;
   notizen: string | null;
   bilder: string[];

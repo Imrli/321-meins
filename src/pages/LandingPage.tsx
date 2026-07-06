@@ -16,12 +16,12 @@ const LandingPage: React.FC = () => {
 
         {/* Hauptslogan */}
         <h1 style={{ fontSize: 28, fontWeight: 'bold', color: '#1E1E1E', textAlign: 'center', marginBottom: 8 }}>
-          Deine Transport-Auktion. Live. Fair. Günstig.
+          Dein Auftrag per Auktion. Live. Fair. Günstig.
         </h1>
 
         {/* Unterslogan */}
         <p style={{ fontSize: 16, color: '#7F8C8D', textAlign: 'center', marginBottom: 32 }}>
-          Transporteure unterbieten sich in Echtzeit – du sparst garantiert.
+          Anbieter unterbieten sich in Echtzeit – du sparst garantiert.
         </p>
 
         {/* Karte Kunden */}
@@ -32,7 +32,7 @@ const LandingPage: React.FC = () => {
           </div>
           <div style={{ marginBottom: 20 }}>
             {[
-              'Start- und Zielort, Art des Transports, Notizen',
+              'Start- und Zielort, Art des Auftrags, Notizen',
               'Auktionsdauer vor Start wählbar (Tage, Stunden, Minuten, Sekunden)',
               'Live den niedrigsten Preis sehen',
               'Keine Gebote: nach 1 Stunde Auktion wiederholen'

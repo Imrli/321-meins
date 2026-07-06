@@ -166,15 +166,48 @@
     opacity: 0.6;
     cursor: not-allowed;
   }
+
+  /**
+   * Hero: engerer Abstand nur oberhalb/unterhalb der CTA-Button-Zeile (schmal +
+   * Hochformat). Map, H1 und Fliesstext: normale Tailwind-Abstände.
+   */
+  .hero-mobile-portrait-cta-tight {
+    gap: 2rem;
+  }
+  .hero-mobile-portrait-register-mt {
+    margin-top: 2rem;
+  }
+  .hero-mobile-portrait-trust-mt {
+    margin-top: 2rem;
+  }
+  .hero-mobile-portrait-cta-inner-gap {
+    gap: 0.75rem;
+  }
+
+  @media (max-width: 768px) and (max-aspect-ratio: 1/1) {
+    .hero-mobile-portrait-cta-tight {
+      gap: 0.5rem;
+    }
+    .hero-mobile-portrait-register-mt {
+      margin-top: 0.5rem;
+    }
+    .hero-mobile-portrait-trust-mt {
+      margin-top: 0.25rem;
+    }
+    .hero-mobile-portrait-cta-inner-gap {
+      gap: 0.5rem;
+    }
+    .hero-mobile-portrait-tight-pb {
+      padding-bottom: 1.25rem !important;
+    }
+  }
 }
 
 @keyframes fadeUp {
   from {
-    opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(10px);
   }
   to {
-    opacity: 1;
     transform: translateY(0);
   }
 }
@@ -206,7 +239,13 @@
 }
 
 .anim-fade-up {
-  animation: fadeUp 0.6s ease-out both;
+  animation: fadeUp 0.5s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-up {
+    animation: none;
+  }
 }
 
 .anim-live {
@@ -223,5 +262,39 @@
   }
   100% {
     transform: translateX(240%);
+  }
+}
+
+/** Transporteur-Tabelle: sanfte Aufmerksamkeit bei „Unterboten“. */
+@keyframes status-underboten-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.04);
+  }
+}
+
+.status-underboten-pulse {
+  animation: status-underboten-pulse 2.2s ease-in-out infinite;
+}
+
+/**
+ * Hero-Fließtext: bis 768px inkl. schwarz (#000). Ab 769px: weiß über min-[769px]
+ * am Element (Tailwind). Grund: ab 768px greift früher md: – exakt 768px war ohne
+ * diese Regel „weiß auf hellem Verlauf“. Verlauf: z-0, Grid: z-10 (App).
+ */
+@media (max-width: 768px) {
+  .hero-home-lead-mobile-black {
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
+    caret-color: #000000 !important;
+    opacity: 1 !important;
+    text-shadow: none !important;
+    mix-blend-mode: normal !important;
+    filter: none !important;
   }
 }

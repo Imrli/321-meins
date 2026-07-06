@@ -4,7 +4,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,14 +13,11 @@ import { createPortal } from "react-dom";
 import { supabase } from "./lib/supabaseClient";
 import {
   authRedirectOrigin,
+  authUserLiteFromMetadata,
   loadAuthUserFromSession,
   resolveLoginEmail,
 } from "./lib/supabaseAuth";
 import * as sbAukt from "./lib/supabaseAuctions";
-import {
-  HOME_AUCTION_SLIDER_FADE_MS,
-  HOME_AUCTION_SLIDER_INTERVAL_MS,
-} from "./config/homeAuctionSlider";
 import {
   fetchAuftraggeberProfile,
   fetchTransporteurProfile,
@@ -33,7 +29,17 @@ import {
   type TransporteurProfile,
 } from "./lib/supabaseAccount";
 import { applyAuctionPrivacy, transporteurHatZuschlagViewer } from "./lib/auctionPrivacy";
+import {
+  formatSessionStartpreisLabel,
+  formatTableFuehrungsgebote,
+  getLowestBidPrice,
+} from "./lib/auctionSessionPricing";
+import {
+  AppAuthSessionProvider,
+  type AppSessionUser,
+} from "./context/AppAuthSessionContext";
 import { isAppTestMode } from "./lib/appTestMode";
+import { invokeFunctionWithAuth } from "./lib/supabaseSession";
 import { ortOeffentlich } from "./lib/ortPublic";
 import type { Auction, AuctionDraft, Bid } from "./types/auction";
 import {
@@ -42,6 +48,13 @@ import {
   SterneBewertung,
 } from "./components/auction/BidRowDisplay";
 import {
+  DienstleistungTypBadge,
+  DienstleistungTypIconBox,
+  dienstleistungTypIcon,
+} from "./components/auction/DienstleistungTypBadge";
+import type { DienstleistungTyp } from "./types/dienstleistungTyp";
+import { AuftragServiceDetailsView } from "./components/auction/AuftragServiceDetailsView";
+import {
   fetchPendingDeliveryRatings,
   fetchReceivedRatingsForProfile,
   submitLieferungBewertung,
@@ -49,6 +62,28 @@ import {
   type ReceivedRatingRow,
 } from "./lib/supabaseRatings";
 import { TransporterLieferungScanBlock } from "./components/transporteur/TransporterLieferungScanBlock";
+import { LiveAuctionTable } from "./components/LiveAuctionTable";
+import { HeroPublicAuctionDemo } from "./components/hero/HeroPublicAuctionDemo";
+import { AuftragErfassenModal } from "./components/gemeinsame/AuftragErfassenModal";
+import { UmzugForm } from "./components/auftraggeber/UmzugForm";
+import { ReinigungForm } from "./components/auftraggeber/ReinigungForm";
+import { UmzugReinigungKombiForm } from "./components/auftraggeber/UmzugReinigungKombiForm";
+import {
+  AuctionDurationField,
+  DEFAULT_AUCTION_DURATION,
+  durationValueToMs,
+  msToDuration,
+  type DurationValue,
+} from "./components/auftraggeber/auctionDuration";
+import {
+  emptyAuctionDraftWithArt,
+  type AuftragsArt,
+} from "./types/auftragsart";
+import { auctionToAuctionData } from "./lib/liveAuctionMap";
+import {
+  getAuctionEndsAtMs,
+  getAuctionRemainingMs,
+} from "./lib/auctionTime";
 import QRCode from "qrcode";
 
 /* ---------- AUTH / APP CONTEXT ---------- */
@@ -75,6 +110,9 @@ type AuthUser = {
 type View =
   | "home"
   | "auction-form"
+  | "umzug-form"
+  | "reinigung-form"
+  | "umzug-reinigung-form"
   | "meine-auktionen"
   | "auction-detail";
 
@@ -92,14 +130,20 @@ function subscribeAppHash(cb: () => void) {
   return () => window.removeEventListener("hashchange", cb);
 }
 
-function getAppPageFromHash():
+type AppPage =
   | "landing"
+  | "dashboard"
   | "ueber-uns"
   | "agb"
   | "datenschutz"
   | "kontakt"
-  | "impressum" {
+  | "impressum";
+
+function getAppPageFromHash(): AppPage {
   const raw = window.location.hash.trim();
+  if (raw === "#/dashboard" || raw.startsWith("#/dashboard?")) {
+    return "dashboard";
+  }
   if (raw === "#/ueber-uns" || raw.startsWith("#/ueber-uns?")) {
     return "ueber-uns";
   }
@@ -116,6 +160,23 @@ function getAppPageFromHash():
     return "impressum";
   }
   return "landing";
+}
+
+function goToDashboardHash() {
+  if (window.location.hash !== "#/dashboard") {
+    window.location.hash = "#/dashboard";
+  } else {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+/** Zurück zur Startseite (Landing mit den vier Dienstleistungs-Optionen). */
+function goToLandingHome() {
+  if (window.location.hash) {
+    window.location.hash = "";
+  } else {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 }
 
 function UeberUnsPage() {
@@ -135,7 +196,7 @@ function UeberUnsPage() {
           <p>
             Wir haben einen Marktplatz geschaffen, der zwei Welten
             zusammenbringt, die sich längst hätten finden sollen. Menschen, die
-            etwas transportieren müssen – und Transporteure, die jeden Tag auf
+            etwas transportieren müssen – und Anbieter, die jeden Tag auf
             Schweizer Strassen unterwegs sind, oft mit leerem Laderaum. Was
             vorher Tage dauerte und dutzende Telefonate kostete, erledigt unsere
             Plattform in Minuten. Fair, transparent, live.
@@ -144,12 +205,12 @@ function UeberUnsPage() {
             Unser Name ist Programm: 3-2-1 zählt den Countdown zur Auktion.
             &apos;Meins&apos; steht für den Moment, in dem beide Seiten
             gewinnen. Der Auftraggeber, weil er den besten Preis bekommt. Der
-            Transporteur, weil er seine Leerfahrten füllt – ohne Fixkosten,
+            Anbieter, weil er seine Leerfahrten füllt – ohne Fixkosten,
             ohne Risiko.
           </p>
           <p>
             Dabei haben wir von Anfang an auf das geachtet, was im digitalen
-            Zeitalter oft zu kurz kommt: absolute Fairness. Transporteure müssen
+            Zeitalter oft zu kurz kommt: absolute Fairness. Anbieter müssen
             sich bei uns mit einem gültigen Versicherungsnachweis und ihrer
             UID-Nummer verifizieren – manuell geprüft, nicht nur ein automatischer
             Haken. Die Bezahlung läuft sicher über unseren Partner Stripe. Und
@@ -201,10 +262,10 @@ function AgbLegalBody() {
             </h2>
             <p className="mt-2">
               321 meins stellt eine technische Plattform zur Vermittlung von
-              Transportaufträgen zwischen Auftraggebern und Transporteuren
+              Transportaufträgen zwischen Auftraggebern und Anbietern
               bereit. Die Plattform selbst erbringt keine Transportleistungen.
               Der Transportvertrag kommt ausschliesslich zwischen dem
-              Auftraggeber und dem Transporteur zustande.
+              Auftraggeber und dem Anbieter zustande.
             </p>
           </div>
           <div>
@@ -212,7 +273,7 @@ function AgbLegalBody() {
               3. Registrierung und Verifizierung
             </h2>
             <p className="mt-2">
-              Die Nutzung erfordert eine kostenlose Registrierung. Transporteure
+              Die Nutzung erfordert eine kostenlose Registrierung. Anbieter
               müssen einen gültigen Versicherungsnachweis und ihre UID-Nummer
               hinterlegen. Die Verifizierung erfolgt manuell durch den
               Plattformbetreiber und kann 1–2 Werktage dauern. Ein Anspruch auf
@@ -226,7 +287,7 @@ function AgbLegalBody() {
             <p className="mt-2">
               Der Auftraggeber stellt einen Transport mit Start- und
               Zieladresse, Abhol- und Lieferdatum sowie optionalen Notizen ein.
-              Transporteure geben in Echtzeit Gebote ab und unterbieten sich
+              Anbieter geben in Echtzeit Gebote ab und unterbieten sich
               gegenseitig (Holländische Auktion). Nach Auktionsende kann der
               Auftraggeber das tiefste Gebot akzeptieren oder ablehnen. Bei
               Ablehnung kann die Auktion nach 60 Minuten erneut gestartet
@@ -239,10 +300,10 @@ function AgbLegalBody() {
             </h2>
             <p className="mt-2">
               Ein verbindlicher Transportvertrag zwischen Auftraggeber und
-              Transporteur kommt zustande, sobald der Auftraggeber nach
+              Anbieter kommt zustande, sobald der Auftraggeber nach
               Auktionsende den Auftrag erteilt und die Zahlung geleistet hat. Mit
               der Zahlung erhält der Auftraggeber einen QR-Code als Bestätigung.
-              Der Transporteur erhält Zugriff auf die vollständigen
+              Der Anbieter erhält Zugriff auf die vollständigen
               Kontaktdaten beider Parteien.
             </p>
           </div>
@@ -252,11 +313,11 @@ function AgbLegalBody() {
             </h2>
             <p className="mt-2">
               Die Nutzung der Plattform ist für Auftraggeber kostenlos.
-              Transporteure zahlen eine Provision in Höhe des bei der
+              Anbieter zahlen eine Provision in Höhe des bei der
               Registrierung vereinbarten Prozentsatzes, fällig nur bei erfolgreich
               vermitteltem Auftrag. Die Zahlung des Auftraggebers wird bei Stripe
               sicher hinterlegt und erst nach erfolgreicher Lieferung
-              (QR-Code-Scan durch den Transporteur) an den Transporteur
+              (QR-Code-Scan durch den Anbieter) an den Anbieter
               ausgelöst. Der Auftraggeber kann per TWINT, Kreditkarte oder
               Apple/Google Pay bezahlen.
             </p>
@@ -265,8 +326,8 @@ function AgbLegalBody() {
             <h2 className="text-lg font-bold text-slate-900">7. QR-Code-Sicherung</h2>
             <p className="mt-2">
               Der QR-Code dient als Nachweis der erfolgreichen Lieferung. Der
-              Transporteur scannt den Code beim Empfänger. Erst durch diesen
-              Scan wird die Zahlung an den Transporteur ausgelöst. Ohne gültigen
+              Anbieter scannt den Code beim Empfänger. Erst durch diesen
+              Scan wird die Zahlung an den Anbieter ausgelöst. Ohne gültigen
               Scan erfolgt keine Überweisung.
             </p>
           </div>
@@ -276,8 +337,8 @@ function AgbLegalBody() {
               321 meins haftet ausschliesslich für Schäden, die durch vorsätzliche
               oder grob fahrlässige Pflichtverletzung des Plattformbetreibers
               entstehen. Für Schäden aus dem Transportvertrag (Beschädigung,
-              Verlust, Verspätung, Nichterscheinen) haftet allein der Transporteur.
-              Der Transporteur ist verpflichtet, eine gültige Transportversicherung
+              Verlust, Verspätung, Nichterscheinen) haftet allein der Anbieter.
+              Der Anbieter ist verpflichtet, eine gültige Transportversicherung
               vorzuweisen. 321 meins übernimmt keine Haftung für Leerfahrten,
               Ausfälle oder sonstige Schäden, die aus dem Verhalten des
               Auftraggebers entstehen.
@@ -287,7 +348,7 @@ function AgbLegalBody() {
             <h2 className="text-lg font-bold text-slate-900">9. Bewertungssystem</h2>
             <p className="mt-2">
               Nach erfolgreicher Lieferung können sich Auftraggeber und
-              Transporteur gegenseitig mit 1 bis 5 Sternen bewerten und einen
+              Anbieter gegenseitig mit 1 bis 5 Sternen bewerten und einen
               optionalen Kommentar hinterlassen. Manipulation oder Missbrauch des
               Bewertungssystems führt zum Ausschluss.
             </p>
@@ -362,7 +423,7 @@ function DatenschutzLegalBody() {
                 Benutzername, Passwort (verschlüsselt)
               </li>
               <li>
-                Transporteure: Firmenname, Vorname und Name der Kontaktperson,
+                Anbieter: Firmenname, Vorname und Name der Kontaktperson,
                 Adresse, Telefon, E-Mail, Benutzername, Passwort (verschlüsselt),
                 UID-Nummer, Versicherungsnachweis
               </li>
@@ -388,7 +449,7 @@ function DatenschutzLegalBody() {
               <li>Bereitstellung und Betrieb der Plattform 321 meins</li>
               <li>
                 Vermittlung von Transportaufträgen zwischen Auftraggebern und
-                Transporteuren
+                Anbietern
               </li>
               <li>Abwicklung der Bezahlung über unseren Partner Stripe</li>
               <li>
@@ -619,7 +680,7 @@ const TRANSPORTER_DATA: Record<string, TransporterInfo> = {
 function getTransporterInfo(initials: string): TransporterInfo {
   return (
     TRANSPORTER_DATA[initials] ?? {
-      firma: `Transporteur ${initials}`,
+      firma: `Anbieter ${initials}`,
       kontakt: "—",
       telefon: "—",
       email: "—",
@@ -673,6 +734,10 @@ type AuthValue = {
   setDeliveryRatingModal: (
     v: { anzeigeId: string; partnerName: string } | null,
   ) => void;
+  auftragErfassenOpen: boolean;
+  openAuftragErfassen: () => void;
+  closeAuftragErfassen: () => void;
+  selectAuftragsart: (art: AuftragsArt) => void;
 };
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -737,14 +802,48 @@ function transporteurHatZuschlag(
   });
 }
 
+function normalizeBidderKey(s: string | undefined | null): string {
+  return (s ?? "").trim().toLowerCase();
+}
+
+type TransporterBidViewer = {
+  username?: string;
+  initials?: string;
+};
+
+function bidIsFromTransporter(
+  bid: Bid,
+  viewer: TransporterBidViewer,
+): boolean {
+  const u = normalizeBidderKey(viewer.username);
+  const bk = normalizeBidderKey(bid.bidderKey);
+  if (u && bk && u === bk) return true;
+  const ini = normalizeBidderKey(viewer.initials);
+  const bi = normalizeBidderKey(bid.initials);
+  if (ini && bi && ini === bi) return true;
+  return false;
+}
+
 function transporterHatGebot(
   auction: Auction,
-  username: string | undefined,
+  viewer: TransporterBidViewer,
 ): boolean {
-  return Boolean(
-    username &&
-      auction.bids.some((b) => b.bidderKey && b.bidderKey === username),
-  );
+  return auction.bids.some((b) => bidIsFromTransporter(b, viewer));
+}
+
+/** Status des Transporteurs in einer Auktion: "none" | "leading" | "outbid". */
+function transporterBidStatus(
+  auction: Auction,
+  viewer: TransporterBidViewer,
+): "none" | "leading" | "outbid" {
+  if (!viewer.username?.trim() && !viewer.initials?.trim()) return "none";
+  const myBids = auction.bids.filter((b) => bidIsFromTransporter(b, viewer));
+  if (myBids.length === 0) return "none";
+  const lowest = [...auction.bids].sort(
+    (a, b) => a.price - b.price || b.ts - a.ts,
+  )[0];
+  if (!lowest) return "none";
+  return bidIsFromTransporter(lowest, viewer) ? "leading" : "outbid";
 }
 
 /** ISO-Datum yyyy-mm-dd → tt.mm.jjjj */
@@ -905,29 +1004,6 @@ function formatMassGewicht(a: Auction): string {
   return "—";
 }
 
-/** Eine Zeile „Art“ für die Startseiten-Vorschau (wie bisher statisch). */
-function formatHomePreviewArtLine(a: Auction): string {
-  const n = a.notizen?.trim();
-  if (n) {
-    const first = n.split(/\n/)[0]?.trim() ?? "";
-    if (first) return first.length > 92 ? `${first.slice(0, 89)}…` : first;
-  }
-  const m = formatMassGewicht(a);
-  return m !== "—" ? m : "—";
-}
-
-function topThreeBidsLowestFirst(a: Auction): Bid[] {
-  if (!a.bids.length) return [];
-  return [...a.bids]
-    .sort((x, y) => x.price - y.price || y.ts - x.ts)
-    .slice(0, 3);
-}
-
-function homeSliderElapsed01(a: Auction, now: number): number {
-  const len = Math.max(1, a.durationMs);
-  return Math.min(1, Math.max(0, (now - a.startedAt) / len));
-}
-
 const LIEFERZEIT_LABEL: Record<
   "vormittags" | "nachmittags" | "flexibel",
   string
@@ -947,26 +1023,12 @@ function formatLieferanzeige(a: Auction): string {
 }
 
 function getLowestBid(a: Auction): Bid | null {
-  if (a.bids.length === 0) return null;
-  return a.bids.reduce((best, b) =>
-    b.price < best.price || (b.price === best.price && b.ts > best.ts) ? b : best,
-  );
-}
-
-function getBidCap(a: Auction): number {
-  const low = getLowestBid(a);
-  return low ? low.price : a.startPrice;
+  return getLowestBidPrice(a);
 }
 
 function isAuctionLive(a: Auction, now: number): boolean {
   if (a.awardedAt || a.rejectedAt) return false;
-  return now < a.startedAt + a.durationMs;
-}
-
-function isAuctionEndedRecently(a: Auction, now: number, hours = 24): boolean {
-  const end = a.startedAt + a.durationMs;
-  if (now < end) return false;
-  return now - end < hours * 3600 * 1000;
+  return now < getAuctionEndsAtMs(a);
 }
 
 function formatCountdownHms(ms: number): string {
@@ -997,6 +1059,25 @@ function scrollToCta() {
   });
 }
 
+/** Gast → Registrierungsblock oben auf der Startseite (wie Hero/CTA). */
+function goToAuftraggeberRegistration() {
+  if (typeof window === "undefined") return;
+  const openReg = () => {
+    window.dispatchEvent(
+      new CustomEvent("321meins-open-registration", {
+        detail: "auftraggeber",
+      }),
+    );
+    scrollToCta();
+  };
+  if (getAppPageFromHash() !== "landing") {
+    window.location.hash = "";
+    window.setTimeout(openReg, 120);
+  } else {
+    openReg();
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -1018,6 +1099,7 @@ export default function App() {
     anzeigeId: string;
     partnerName: string;
   } | null>(null);
+  const [auftragErfassenOpen, setAuftragErfassenOpen] = useState(false);
 
   const refreshPendingDeliveryRatings = useCallback(async () => {
     if (!useSupabase || !supabase || !user?.userId || !user.role) {
@@ -1083,9 +1165,13 @@ export default function App() {
         if (!cancelled) setUser(null);
         return;
       }
-      const au = await loadAuthUserFromSession(sessionUser);
+      let au = await loadAuthUserFromSession(sessionUser);
+      if (!au) au = authUserLiteFromMetadata(sessionUser);
       if (cancelled) return;
       if (au) {
+        if (au.role === "transporteur") {
+          await sbAukt.ensureTransporteurRow(au.userId, au.email);
+        }
         setUser({
           username: au.username,
           role: au.role,
@@ -1120,7 +1206,11 @@ export default function App() {
     const client = supabase;
     let cancelled = false;
     const refresh = () => {
-      void sbAukt.fetchAuctionsForUser().then((list) => {
+      const load =
+        user.role === "transporteur"
+          ? sbAukt.fetchDashboardAuctionsForTransporteur()
+          : sbAukt.fetchAuctionsForUser();
+      void load.then((list) => {
         if (!cancelled) setAuctions(list);
       });
       void fetchPendingDeliveryRatings(user.userId!, user.role).then(
@@ -1290,6 +1380,7 @@ export default function App() {
       setSelectedAuctionId(null);
       setAuctionFormPrefill(null);
       setTransporterBidFocusId(null);
+      setAuftragErfassenOpen(false);
       if (useSupabase) setAuctions([]);
     },
     openLogin: (hint) => {
@@ -1315,7 +1406,10 @@ export default function App() {
         return r.anzeigeId;
       }
       const id = `A-${2800 + Math.floor(Math.random() * 200)}`;
-      const startPrice = 280 + Math.floor(Math.random() * 80);
+      const startPrice =
+        draft.startPrice != null && draft.startPrice > 0
+          ? draft.startPrice
+          : 280 + Math.floor(Math.random() * 80);
       const newAuction: Auction = {
         id,
         ownerUsername: user.username,
@@ -1385,8 +1479,10 @@ export default function App() {
       if (!a) return "Auktion nicht gefunden.";
       const now = Date.now();
       if (!isAuctionLive(a, now)) return "Auktion ist nicht mehr aktiv.";
-      const cap = getBidCap(a);
-      if (!(price < cap)) return `Dein Gebot muss unter CHF ${cap} liegen.`;
+      const low = getLowestBid(a);
+      if (low && !(price < low.price)) {
+        return `Dein Gebot muss unter CHF ${low.price} liegen.`;
+      }
       if (useSupabase && supabase && user.userId) {
         if (!a.auctionUuid)
           return "Auktion nicht synchronisiert.";
@@ -1398,7 +1494,36 @@ export default function App() {
           price,
         );
         if (err) return err;
-        setAuctions(await sbAukt.fetchAuctionsForUser());
+        // Optimistic local update, damit die Tabellen-Status-Spalte und
+        // alle UI-Anzeigen ohne DB-Roundtrip-Lag korrekt sind.
+        setAuctions((prev) =>
+          prev.map((x) =>
+            x.id === auctionId
+              ? {
+                  ...x,
+                  bids: [
+                    {
+                      initials,
+                      price,
+                      ts: Date.now(),
+                      bidderKey: user.username,
+                      verifiziert: true,
+                    },
+                    ...x.bids,
+                  ],
+                }
+              : x,
+          ),
+        );
+        // Danach echtes Refresh (kann später eintreffen).
+        void (async () => {
+          try {
+            const fresh = await sbAukt.fetchDashboardAuctionsForTransporteur();
+            setAuctions(fresh);
+          } catch (e) {
+            console.warn("[bid] refresh after insertBid failed", e);
+          }
+        })();
         return null;
       }
       setAuctions((prev) =>
@@ -1434,22 +1559,26 @@ export default function App() {
     goToMyAuctions: () => {
       setView("meine-auktionen");
       setSelectedAuctionId(null);
-      scrollToCta();
+      goToDashboardHash();
     },
     goToAuctionForm: (prefill) => {
       setAuctionFormPrefill(prefill ?? null);
       setView("auction-form");
       setSelectedAuctionId(null);
-      scrollToCta();
+      goToDashboardHash();
     },
     viewAuctionDetail: (id) => {
       setSelectedAuctionId(id);
       setView("auction-detail");
-      scrollToCta();
+      goToDashboardHash();
     },
     refreshAuctions: async () => {
-      if (!useSupabase || !supabase) return;
-      setAuctions(await sbAukt.fetchAuctionsForUser());
+      if (!useSupabase || !supabase || !user) return;
+      if (user.role === "transporteur") {
+        setAuctions(await sbAukt.fetchDashboardAuctionsForTransporteur());
+      } else {
+        setAuctions(await sbAukt.fetchAuctionsForUser());
+      }
     },
     refreshSessionUser: async () => {
       if (!useSupabase || !supabase) return;
@@ -1476,9 +1605,12 @@ export default function App() {
     },
     markAuctionDeliveredMock: (anzeigeId) => {
       if (useSupabase) return;
+      const now = Date.now();
       setAuctions((prev) =>
         prev.map((a) =>
-          a.id === anzeigeId ? { ...a, auctionStatus: "bezahlt" } : a,
+          a.id === anzeigeId
+            ? { ...a, auctionStatus: "bezahlt", freigegebenAt: now }
+            : a,
         ),
       );
     },
@@ -1503,39 +1635,84 @@ export default function App() {
     refreshPendingDeliveryRatings,
     deliveryRatingModal,
     setDeliveryRatingModal,
+    auftragErfassenOpen,
+    openAuftragErfassen: () => {
+      if (user?.role === "auftraggeber") {
+        setAuftragErfassenOpen(true);
+        return;
+      }
+      if (!user) {
+        goToAuftraggeberRegistration();
+      }
+    },
+    closeAuftragErfassen: () => setAuftragErfassenOpen(false),
+    selectAuftragsart: (art) => {
+      setAuctionFormPrefill(emptyAuctionDraftWithArt(art));
+      setView(
+        art === "Umzug"
+          ? "umzug-form"
+          : art === "Reinigung"
+            ? "reinigung-form"
+            : art === "Umzug + Reinigung"
+              ? "umzug-reinigung-form"
+              : "auction-form",
+      );
+      setSelectedAuctionId(null);
+      setAuftragErfassenOpen(false);
+      goToDashboardHash();
+    },
   };
+
+  const appSessionUser: AppSessionUser | null = user
+    ? {
+        username: user.username,
+        role: user.role,
+        initials: user.initials,
+        userId: user.userId,
+        email: user.email,
+      }
+    : null;
 
   return (
     <AuthContext.Provider value={auth}>
-      <div className="min-h-screen bg-[var(--color-surface-alt)] text-[var(--color-ink)]">
-        <Navbar />
-        {appPage === "landing" ? (
-          <>
-            <CTA />
-            <Hero />
-            <TrustBar />
-            <HowItWorks />
-            <Audience />
-            <Testimonials />
-            <Stats />
-            <LandingMidRegisterCta />
-            <FAQ />
-          </>
-        ) : appPage === "ueber-uns" ? (
-          <UeberUnsPage />
-        ) : appPage === "agb" ? (
-          <AgbPage />
-        ) : appPage === "datenschutz" ? (
-          <DatenschutzPage />
-        ) : appPage === "kontakt" ? (
-          <KontaktPage />
-        ) : (
-          <ImpressumPage />
-        )}
-        <Footer />
-      </div>
-      {loginOpen && <LoginModal />}
-      <LieferungBewertenModal />
+      <AppAuthSessionProvider user={appSessionUser}>
+        <div className="min-h-screen bg-[var(--color-surface-alt)] text-[var(--color-ink)]">
+          <Navbar showServices={appPage === "landing"} />
+          {appPage === "landing" ? (
+            <>
+              <CTA />
+              <Hero />
+              <TrustBar />
+              <HowItWorks />
+              <Audience />
+              <Testimonials />
+              <Stats />
+              <LandingMidRegisterCta />
+              <FAQ />
+            </>
+          ) : appPage === "dashboard" ? (
+            <DashboardPage />
+          ) : appPage === "ueber-uns" ? (
+            <UeberUnsPage />
+          ) : appPage === "agb" ? (
+            <AgbPage />
+          ) : appPage === "datenschutz" ? (
+            <DatenschutzPage />
+          ) : appPage === "kontakt" ? (
+            <KontaktPage />
+          ) : (
+            <ImpressumPage />
+          )}
+          <Footer />
+        </div>
+        {loginOpen && <LoginModal />}
+        <AuftragErfassenModal
+          open={auftragErfassenOpen}
+          onClose={() => setAuftragErfassenOpen(false)}
+          onSelect={(art) => auth.selectAuftragsart(art)}
+        />
+        <LieferungBewertenModal />
+      </AppAuthSessionProvider>
     </AuthContext.Provider>
   );
 }
@@ -1567,7 +1744,7 @@ function LieferungBewertenModal() {
   if (!open || !user || !deliveryRatingModal) return null;
 
   const roleLabel =
-    user.role === "auftraggeber" ? "Transporteur" : "Auftraggeber";
+    user.role === "auftraggeber" ? "Anbieter" : "Auftraggeber";
 
   return (
     <div
@@ -1691,11 +1868,12 @@ function LieferungBewertenModal() {
 }
 
 /* ---------- NAVBAR ---------- */
-function Navbar() {
+function Navbar({ showServices = false }: { showServices?: boolean }) {
   const {
     user,
     openLogin,
     goToMyAuctions,
+    openAuftragErfassen,
     pendingDeliveryRatings,
     setDeliveryRatingModal,
   } = useAuth();
@@ -1739,6 +1917,18 @@ function Navbar() {
         </button>
 
         <ul className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-700">
+          {user && (
+            <li>
+              <button
+                type="button"
+                onClick={goToLandingHome}
+                className="inline-flex cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 hover:text-[var(--color-brand-700)] transition-colors"
+              >
+                <Home className="size-4" />
+                Home
+              </button>
+            </li>
+          )}
           {links.map((l) => (
             <li key={l.href}>
               <a
@@ -1749,6 +1939,17 @@ function Navbar() {
               </a>
             </li>
           ))}
+          {(!user || user.role === "auftraggeber") && (
+            <li>
+              <button
+                type="button"
+                onClick={openAuftragErfassen}
+                className="inline-flex cursor-pointer items-center justify-center rounded-full bg-[var(--color-accent-500)] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
+              >
+                Auftrag erfassen
+              </button>
+            </li>
+          )}
           {user?.role === "auftraggeber" && (
             <li>
               <button
@@ -1757,6 +1958,17 @@ function Navbar() {
                 className="inline-flex cursor-pointer items-center justify-center rounded-full bg-[var(--color-accent-500)] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
               >
                 Meine Auktionen
+              </button>
+            </li>
+          )}
+          {user?.role === "transporteur" && (
+            <li>
+              <button
+                type="button"
+                onClick={() => goToDashboardHash()}
+                className="inline-flex cursor-pointer items-center justify-center rounded-full bg-[var(--color-accent-500)] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
+              >
+                Mein Dashboard
               </button>
             </li>
           )}
@@ -1807,6 +2019,21 @@ function Navbar() {
       {open && (
         <div className="md:hidden border-t border-slate-200 bg-white">
           <ul className="px-5 py-3">
+            {user && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    goToLandingHome();
+                  }}
+                  className="flex w-full items-center gap-2 py-2 text-sm font-medium text-slate-700"
+                >
+                  <Home className="size-4" />
+                  Home
+                </button>
+              </li>
+            )}
             {links.map((l) => (
               <li key={l.href}>
                 <a
@@ -1818,6 +2045,20 @@ function Navbar() {
                 </a>
               </li>
             ))}
+            {(!user || user.role === "auftraggeber") && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    openAuftragErfassen();
+                  }}
+                  className="inline-flex w-full items-center justify-center rounded-full bg-[var(--color-accent-500)] px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
+                >
+                  Auftrag erfassen
+                </button>
+              </li>
+            )}
             {user?.role === "auftraggeber" && (
               <li>
                 <button
@@ -1832,20 +2073,39 @@ function Navbar() {
                 </button>
               </li>
             )}
-            <li className="pt-2">
-              <a
-                href="#cta"
-                onClick={() => setOpen(false)}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[var(--color-brand-700)] px-4 py-3 text-sm font-semibold text-white btn-action-shine"
-              >
-                Jetzt starten
-                <ArrowRight className="size-4" />
-              </a>
-            </li>
+            {user?.role === "transporteur" && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    goToDashboardHash();
+                  }}
+                  className="inline-flex w-full items-center justify-center rounded-full bg-[var(--color-accent-500)] px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
+                >
+                  Mein Dashboard
+                </button>
+              </li>
+            )}
+            {!user && (
+              <li className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    openLogin();
+                  }}
+                  className="inline-flex w-full items-center justify-center rounded-full bg-[var(--color-brand-700)] px-4 py-3 text-sm font-semibold text-white btn-action-shine"
+                >
+                  Login
+                </button>
+              </li>
+            )}
           </ul>
         </div>
       )}
       </header>
+      {showServices && <ServiceBar />}
       {user && pendingDeliveryRatings.length > 0 && (
         <div className="border-b border-amber-200 bg-amber-50 px-5 py-2.5 text-center text-sm text-amber-950">
           <button
@@ -1888,6 +2148,12 @@ function Logo() {
 }
 
 /* ---------- USER MENU / KONTO ---------- */
+/** Modals ausserhalb des Headers rendern (backdrop-blur erzeugt sonst falsche fixed-Position). */
+function AccountModalPortal({ children }: { children: React.ReactNode }) {
+  if (typeof document === "undefined") return null;
+  return createPortal(children, document.body);
+}
+
 function ProfileEditModal({
   onClose,
   role,
@@ -1905,6 +2171,7 @@ function ProfileEditModal({
     vorname: "",
     name: "",
     strasse: "",
+    hausnummer: "",
     plz: "",
     ort: "",
     telefon: "",
@@ -1914,11 +2181,15 @@ function ProfileEditModal({
     firmenname: "",
     vorname_kontakt: "",
     name_kontakt: "",
+    uid: "",
     strasse: "",
     plz: "",
     ort: "",
     telefon: "",
     email: "",
+    benutzername: "",
+    kuerzel: "",
+    verifiziert: false,
   });
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileMsg, setProfileMsg] = useState<string | null>(null);
@@ -2019,6 +2290,7 @@ function ProfileEditModal({
         !f.firmenname.trim() ||
         !f.vorname_kontakt.trim() ||
         !f.name_kontakt.trim() ||
+        !String(f.uid ?? "").trim() ||
         !f.strasse.trim() ||
         !f.plz.trim() ||
         !f.ort.trim() ||
@@ -2072,22 +2344,23 @@ function ProfileEditModal({
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="profile-edit-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm anim-fade-up"
-    >
-      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-200 bg-white p-7 shadow-2xl md:p-8">
-        <h2
-          id="profile-edit-title"
-          className="text-2xl font-extrabold tracking-tight text-slate-900"
-        >
-          Profil bearbeiten
-        </h2>
+    <AccountModalPortal>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="profile-edit-title"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm anim-fade-up"
+      >
+        <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-200 bg-white p-7 shadow-2xl md:p-8">
+          <h2
+            id="profile-edit-title"
+            className="text-2xl font-extrabold tracking-tight text-slate-900"
+          >
+            Profil bearbeiten
+          </h2>
         {loading && (
           <p className="mt-4 text-sm text-slate-600">Daten werden geladen …</p>
         )}
@@ -2234,6 +2507,13 @@ function ProfileEditModal({
                     required
                   />
                   <Field
+                    label="UID"
+                    name="uid"
+                    value={String(trForm.uid ?? "")}
+                    onChange={(_, v) => setTrForm((p) => ({ ...p, uid: v }))}
+                    required
+                  />
+                  <Field
                     label="Vorname Kontaktperson"
                     name="vorname_kontakt"
                     value={trForm.vorname_kontakt}
@@ -2250,6 +2530,22 @@ function ProfileEditModal({
                       setTrForm((p) => ({ ...p, name_kontakt: v }))
                     }
                     required
+                  />
+                  <Field
+                    label="Benutzername"
+                    name="benutzername"
+                    value={String(trForm.benutzername ?? "")}
+                    onChange={(_, v) =>
+                      setTrForm((p) => ({ ...p, benutzername: v }))
+                    }
+                  />
+                  <Field
+                    label="Kürzel"
+                    name="kuerzel"
+                    value={String(trForm.kuerzel ?? "")}
+                    onChange={(_, v) =>
+                      setTrForm((p) => ({ ...p, kuerzel: v }))
+                    }
                   />
                   <Field
                     label="Strasse"
@@ -2399,8 +2695,9 @@ function ProfileEditModal({
             </button>
           </div>
         )}
+        </div>
       </div>
-    </div>
+    </AccountModalPortal>
   );
 }
 
@@ -2444,22 +2741,23 @@ function DeleteProfileConfirmModal({
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="delete-profile-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !busy) onClose();
-      }}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm anim-fade-up"
-    >
-      <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 shadow-2xl md:p-8">
-        <h2
-          id="delete-profile-title"
-          className="text-xl font-extrabold tracking-tight text-slate-900"
-        >
-          Profil löschen
-        </h2>
+    <AccountModalPortal>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-profile-title"
+        onClick={(e) => {
+          if (e.target === e.currentTarget && !busy) onClose();
+        }}
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm anim-fade-up"
+      >
+        <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 shadow-2xl md:p-8">
+          <h2
+            id="delete-profile-title"
+            className="text-xl font-extrabold tracking-tight text-slate-900"
+          >
+            Profil löschen
+          </h2>
         <p className="mt-4 text-sm leading-relaxed text-slate-600">
           Bist du sicher, dass du dein Profil löschen möchtest? Deine aktiven
           Auktionen und Gebote gehen dabei verloren. Wir würden uns freuen,
@@ -2491,8 +2789,9 @@ function DeleteProfileConfirmModal({
             {busy ? "Bitte warten …" : "Profil löschen"}
           </button>
         </div>
+        </div>
       </div>
-    </div>
+    </AccountModalPortal>
   );
 }
 
@@ -2500,6 +2799,7 @@ function UserMenu() {
   const { user, logout, refreshSessionUser } = useAuth();
   const [open, setOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const canAccount =
@@ -2567,7 +2867,7 @@ function UserMenu() {
               type="button"
               onClick={() => {
                 setOpen(false);
-                if (canAccount) setProfileOpen(true);
+                if (canAccount) setAccountOpen(true);
               }}
               className="block w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100"
             >
@@ -2608,6 +2908,13 @@ function UserMenu() {
           refreshSessionUser={refreshSessionUser}
         />
       )}
+      {canAccount && accountOpen && user.userId && (
+        <AccountOverviewModal
+          onClose={() => setAccountOpen(false)}
+          role={user.role}
+          userId={user.userId}
+        />
+      )}
       {canAccount && deleteOpen && (
         <DeleteProfileConfirmModal
           onClose={() => setDeleteOpen(false)}
@@ -2615,6 +2922,181 @@ function UserMenu() {
         />
       )}
     </>
+  );
+}
+
+function AccountOverviewModal({
+  onClose,
+  role,
+  userId,
+}: {
+  onClose: () => void;
+  role: UserRole;
+  userId: string;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [ag, setAg] = useState<AuftraggeberProfile | null>(null);
+  const [tr, setTr] = useState<TransporteurProfile | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setLoading(true);
+      setErr(null);
+      setAg(null);
+      setTr(null);
+      if (role === "auftraggeber") {
+        const r = await fetchAuftraggeberProfile(userId);
+        if (cancelled) return;
+        if (!r.ok) {
+          setErr(r.error);
+          setLoading(false);
+          return;
+        }
+        setAg(r.data);
+      } else {
+        const r = await fetchTransporteurProfile(userId);
+        if (cancelled) return;
+        if (!r.ok) {
+          setErr(r.error);
+          setLoading(false);
+          return;
+        }
+        setTr(r.data);
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [role, userId]);
+
+  return (
+    <AccountModalPortal>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-overview-title"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm anim-fade-up"
+      >
+        <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-200 bg-white p-7 shadow-2xl md:p-8">
+          <h2
+            id="account-overview-title"
+            className="text-2xl font-extrabold tracking-tight text-slate-900"
+          >
+            Mein Konto
+          </h2>
+        {loading && (
+          <p className="mt-4 text-sm text-slate-600">Daten werden geladen …</p>
+        )}
+        {err && (
+          <div
+            role="alert"
+            className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700"
+          >
+            {err}
+          </div>
+        )}
+        {!loading && !err && (
+          <div className="mt-5 space-y-4 text-sm">
+            {role === "auftraggeber" && ag && (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+                <dt className="text-slate-500">Name</dt>
+                <dd className="font-medium text-slate-900">
+                  {[ag.vorname, ag.name].filter(Boolean).join(" ")}
+                </dd>
+                <dt className="text-slate-500">Adresse</dt>
+                <dd className="font-medium text-slate-900">
+                  {[ag.strasse, ag.hausnummer, `${ag.plz} ${ag.ort}`]
+                    .filter(Boolean)
+                    .join(", ")}
+                </dd>
+                <dt className="text-slate-500">Telefon</dt>
+                <dd className="font-medium text-slate-900">{ag.telefon}</dd>
+                <dt className="text-slate-500">E-Mail</dt>
+                <dd className="font-medium text-slate-900">{ag.email}</dd>
+              </dl>
+            )}
+            {role === "transporteur" && tr && (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+                <dt className="text-slate-500">Benutzername</dt>
+                <dd className="font-medium text-slate-900">
+                  {String(tr.benutzername ?? "").trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">Firma</dt>
+                <dd className="font-medium text-slate-900">
+                  {tr.firmenname?.trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">UID</dt>
+                <dd className="font-medium text-slate-900">
+                  {String(tr.uid ?? "").trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">Kontakt</dt>
+                <dd className="font-medium text-slate-900">
+                  {[tr.vorname_kontakt, tr.name_kontakt]
+                    .filter((s) => s?.trim())
+                    .join(" ") || "—"}
+                </dd>
+                <dt className="text-slate-500">Strasse</dt>
+                <dd className="font-medium text-slate-900">
+                  {tr.strasse?.trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">PLZ / Ort</dt>
+                <dd className="font-medium text-slate-900">
+                  {[tr.plz, tr.ort].filter((s) => s?.trim()).join(" ") || "—"}
+                </dd>
+                <dt className="text-slate-500">Telefon</dt>
+                <dd className="font-medium text-slate-900">
+                  {tr.telefon?.trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">E-Mail</dt>
+                <dd className="font-medium text-slate-900">
+                  {tr.email?.trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">Kürzel</dt>
+                <dd className="font-medium text-slate-900">
+                  {String(tr.kuerzel ?? "").trim() || "—"}
+                </dd>
+                <dt className="text-slate-500">Verifiziert</dt>
+                <dd className="font-medium text-slate-900">
+                  {tr.verifiziert ? "Ja" : "Nein"}
+                </dd>
+              </dl>
+            )}
+          </div>
+        )}
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            Schliessen
+          </button>
+        </div>
+        </div>
+      </div>
+    </AccountModalPortal>
   );
 }
 
@@ -2755,7 +3237,7 @@ function LoginModal() {
                       : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                   }`}
                 >
-                  Transporteur
+                  Anbieter
                 </button>
               </div>
             </div>
@@ -2954,92 +3436,58 @@ function SwissOutlineWatermark({ className }: { className?: string }) {
   );
 }
 
-function HeroRegisterChoiceModal({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+const SERVICE_TILES: {
+  art: AuftragsArt;
+  typ: DienstleistungTyp;
+  label: string;
+}[] = [
+  { art: "Umzug", typ: "umzug", label: "Umzug" },
+  { art: "Reinigung", typ: "reinigung", label: "Reinigung" },
+  { art: "Umzug + Reinigung", typ: "umzug_reinigung", label: "Umzug + Reinigung" },
+  { art: "Transport", typ: "transport", label: "Transport" },
+];
 
-  if (!open) return null;
+/**
+ * Schnell-Einstieg zuoberst: vier gleich grosse Dienstleistungs-Buttons.
+ * Gast -> Registrierung/Login, Auftraggeber -> passendes Formular direkt.
+ */
+function ServiceBar() {
+  const { user, openAuftragErfassen, selectAuftragsart } = useAuth();
 
-  const choose = (role: "auftraggeber" | "transporteur") => {
-    window.dispatchEvent(
-      new CustomEvent("321meins-open-registration", { detail: role }),
-    );
-    scrollToCta();
-    onClose();
+  const startService = (art: AuftragsArt) => {
+    if (user?.role === "auftraggeber") {
+      selectAuftragsart(art);
+    } else {
+      openAuftragErfassen();
+    }
   };
 
-  return createPortal(
-    <div
-      role="presentation"
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="hero-reg-choice-title"
-        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <h2
-            id="hero-reg-choice-title"
-            className="text-lg font-bold text-slate-900"
-          >
-            Jetzt registrieren
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl text-2xl leading-none text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-            aria-label="Schliessen"
-          >
-            ×
-          </button>
-        </div>
-        <p className="mt-2 text-sm text-slate-600">
-          Wähle, wie du 321 meins nutzen möchtest.
-        </p>
-        <div className="mt-6 flex flex-col gap-3">
-          <button
-            type="button"
-            onClick={() => choose("auftraggeber")}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[var(--color-accent-500)] px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/20 transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
-          >
-            Als Auftraggeber registrieren
-          </button>
-          <button
-            type="button"
-            onClick={() => choose("transporteur")}
-            className="btn-action-shine inline-flex w-full items-center justify-center gap-2 rounded-full border-2 border-white bg-black px-5 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-slate-950"
-          >
-            Als Transporteur registrieren
-          </button>
+  return (
+    <div className="border-b border-slate-200 bg-white">
+      <div className="mx-auto max-w-6xl px-5 py-3">
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3">
+          {SERVICE_TILES.map((tile) => (
+            <button
+              key={tile.art}
+              type="button"
+              onClick={() => startService(tile.art)}
+              aria-label={`${tile.label} – Auftrag erfassen`}
+              className="group flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-center text-xs font-semibold leading-tight text-[var(--color-brand-800)] shadow-sm transition-all hover:-translate-y-0.5 hover:border-[var(--color-accent-400)] hover:bg-[var(--color-accent-50)] hover:text-[var(--color-accent-700)] hover:shadow-md btn-action-shine sm:flex-row sm:gap-2 sm:rounded-full sm:px-4 sm:py-3 sm:text-sm"
+            >
+              <span className="text-[var(--color-accent-500)] transition-transform group-hover:scale-110">
+                {dienstleistungTypIcon(tile.typ, "size-5")}
+              </span>
+              <span>{tile.label}</span>
+            </button>
+          ))}
         </div>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
 }
 
 function Hero() {
-  const { user, goToAuctionForm } = useAuth();
-  const [registerChoiceOpen, setRegisterChoiceOpen] = useState(false);
-  const isAuftraggeber = user?.role === "auftraggeber";
+  const { openAuftragErfassen } = useAuth();
 
   return (
     <section className="relative overflow-hidden">
@@ -3068,37 +3516,29 @@ function Hero() {
 
           <h1 className="mt-6 text-4xl font-extrabold leading-[1.05] tracking-tight md:text-6xl">
             <span className="bg-gradient-to-r from-[var(--color-accent-300)] to-[var(--color-accent-500)] bg-clip-text text-transparent">
-              Live. Fair. Günstig.
+              Umzug. Reinigung. Transport. – alles live ersteigern.
             </span>
           </h1>
 
           <p className="mt-5 max-w-xl text-base leading-relaxed text-white/75 md:text-lg">
-            Transporteure unterbieten sich in Echtzeit – du siehst den besten
-            Preis sofort und sparst garantiert. Ohne versteckte Kosten, ohne
-            endloses Vergleichen.
+            Lade deine Aufträge ein – Anbieter bieten in Echtzeit. Fair,
+            transparent &amp; anonym.
           </p>
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <button
               type="button"
-              onClick={() => {
-                if (isAuftraggeber) {
-                  goToAuctionForm();
-                  scrollToCta();
-                } else {
-                  setRegisterChoiceOpen(true);
-                }
-              }}
+              onClick={() => openAuftragErfassen()}
               className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-accent-500)] px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 hover:bg-[var(--color-accent-600)] transition-colors btn-action-shine"
             >
-              {isAuftraggeber ? "Transport ausschreiben" : "Jetzt registrieren"}
+              Auftrag erfassen
               <ArrowRight className="size-4" />
             </button>
             <a
               href="#fuer-wen"
               className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/5 px-6 py-3.5 text-sm font-semibold text-white backdrop-blur hover:bg-white/10 transition-colors btn-action-shine"
             >
-              Als Transporteur mitbieten
+              Als Anbieter mitbieten
             </a>
           </div>
 
@@ -3115,10 +3555,6 @@ function Hero() {
       </div>
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-b from-transparent to-[var(--color-surface-alt)]" />
-      <HeroRegisterChoiceModal
-        open={registerChoiceOpen}
-        onClose={() => setRegisterChoiceOpen(false)}
-      />
     </section>
   );
 }
@@ -3131,410 +3567,13 @@ function TrustItem({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Hero rechts: ausschliesslich statische Demo (kein LiveAuctionTable, keine Supabase).
+ */
 function HomeAuctionSlider() {
-  const [slides, setSlides] = useState<Auction[]>([]);
-  const [index, setIndex] = useState(0);
-  const [visible, setVisible] = useState(true);
-  const indexRef = useRef(0);
-  const touchStartX = useRef<number | null>(null);
-  const now = useNow(1000);
-
-  const fadeMs = HOME_AUCTION_SLIDER_FADE_MS;
-  const autoMs = HOME_AUCTION_SLIDER_INTERVAL_MS;
-
-  const loadSlides = useMemo(() => {
-    return async () => {
-      if (!useSupabase) return;
-      const liveRaw = await sbAukt.fetchHomepageSliderLiveAuctions();
-      const live = liveRaw.map((a) => applyAuctionPrivacy(a, null));
-      setSlides(live);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!useSupabase) return;
-    void loadSlides();
-  }, [loadSlides]);
-
-  useEffect(() => {
-    if (!useSupabase) return;
-    const t = setInterval(() => void loadSlides(), 90_000);
-    return () => clearInterval(t);
-  }, [loadSlides]);
-
-  useEffect(() => {
-    indexRef.current = index;
-  }, [index]);
-
-  useEffect(() => {
-    setIndex((i) => (slides.length === 0 ? 0 : Math.min(i, slides.length - 1)));
-  }, [slides.length]);
-
-  const goTo = useCallback(
-    (next: number) => {
-      if (slides.length === 0) return;
-      const len = slides.length;
-      const n = ((next % len) + len) % len;
-      setVisible(false);
-      window.setTimeout(() => {
-        setIndex(n);
-        requestAnimationFrame(() => setVisible(true));
-      }, fadeMs);
-    },
-    [slides.length, fadeMs],
-  );
-
-  const goNext = useCallback(() => {
-    if (slides.length === 0) return;
-    goTo(indexRef.current + 1);
-  }, [goTo, slides.length]);
-
-  const goPrev = useCallback(() => {
-    if (slides.length === 0) return;
-    goTo(indexRef.current - 1);
-  }, [goTo, slides.length]);
-
-  useEffect(() => {
-    if (slides.length <= 1) return;
-    const t = setInterval(() => {
-      goNext();
-    }, autoMs);
-    return () => clearInterval(t);
-  }, [slides.length, autoMs, goNext]);
-
-  useEffect(() => {
-    if (slides.length === 0) return;
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el?.closest?.("input, textarea, select, [contenteditable=true]"))
-        return;
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        goPrev();
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        goNext();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [slides.length, goNext, goPrev]);
-
-  const auction = slides[index];
-
-  // Keine Live-Auktionen → ursprüngliche statische Vorschau anzeigen.
-  if (!auction) {
-    return <AuctionPreview />;
-  }
-
-  const remaining = auction.startedAt + auction.durationMs - now;
-  const timeUp = remaining <= 0;
-  const leading = getLeadingBid(auction);
-  const bidRows = topThreeBidsLowestFirst(auction);
-  const elapsed = timeUp ? 1 : homeSliderElapsed01(auction, now);
-
-  return (
-    <div className="relative">
-      <div className="absolute -inset-6 -z-10 rounded-[32px] bg-gradient-to-br from-white/10 to-white/0 blur-2xl" />
-      <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-2 shadow-2xl shadow-black/40 backdrop-blur-xl">
-        <div
-          role="region"
-          aria-roledescription="Karussell"
-          aria-label="Live-Auktionen"
-          tabIndex={0}
-          className="rounded-[22px] bg-white p-6 outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-          style={{ touchAction: "pan-y" }}
-          onTouchStart={(e) => {
-            touchStartX.current = e.touches[0]?.clientX ?? null;
-          }}
-          onTouchEnd={(e) => {
-            const start = touchStartX.current;
-            touchStartX.current = null;
-            if (start == null || slides.length <= 1) return;
-            const x = e.changedTouches[0]?.clientX;
-            if (x == null) return;
-            const d = x - start;
-            if (d > 56) goPrev();
-            else if (d < -56) goNext();
-          }}
-        >
-          <div
-            className="transition-opacity ease-in-out"
-            style={{
-              opacity: visible ? 1 : 0,
-              transitionDuration: `${fadeMs}ms`,
-            }}
-          >
-            <div className="relative flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--color-brand-50)] text-[var(--color-brand-700)]">
-                  <Truck className="size-4" />
-                </span>
-                <div className="min-w-0 text-xs font-medium text-slate-500">
-                  Auftrag #{auction.id}
-                </div>
-              </div>
-              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-                <span className="size-1.5 rounded-full bg-emerald-500 anim-live" />
-                LIVE
-              </span>
-            </div>
-
-            <div className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
-              <span className="text-slate-500">Von</span>
-              <span className="font-medium text-slate-900">
-                {auction.startort}
-              </span>
-              <span className="text-slate-500">Nach</span>
-              <span className="font-medium text-slate-900">
-                {auction.zielort}
-              </span>
-              <span className="text-slate-500">Art</span>
-              <span className="font-medium text-slate-900">
-                {formatHomePreviewArtLine(auction)}
-              </span>
-            </div>
-
-            <div className="mt-5 rounded-2xl bg-gradient-to-br from-[var(--color-brand-700)] to-[var(--color-brand-800)] p-5 text-white">
-              <div className="flex items-baseline justify-between">
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-white/60">
-                    Aktuelles Führungsgebot
-                  </div>
-                  <div className="mt-1 flex items-baseline gap-1">
-                    <span className="text-4xl font-extrabold tabular-nums">
-                      {leading !== null ? `CHF ${leading}` : "—"}
-                    </span>
-                    {leading !== null && !timeUp && (
-                      <span className="anim-bid text-xs font-semibold text-emerald-300">
-                        ▼
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[11px] uppercase tracking-wider text-white/60">
-                    Endet in
-                  </div>
-                  <div className="mt-1 font-mono text-2xl font-bold tabular-nums">
-                    {timeUp ? "00:00" : formatRemaining(Math.max(0, remaining))}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/15">
-                <div
-                  className="h-full rounded-full bg-[var(--color-accent-400)] transition-all"
-                  style={{ width: `${elapsed * 100}%` }}
-                />
-              </div>
-              <div className="mt-3 flex items-center justify-between text-xs text-white/70">
-                <span>
-                  {auction.bids.length}{" "}
-                  {auction.bids.length === 1 ? "Gebot" : "Gebote"}
-                </span>
-                <span>Startpreis: CHF {auction.startPrice}</span>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-2">
-              {bidRows.map((bid, i) => (
-                <div
-                  key={`${bid.ts}-${bid.price}-${i}`}
-                  className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-sm"
-                >
-                  <GebotszeileRow
-                    bid={bid}
-                    timeLabel={formatRelative(bid.ts, now)}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {slides.length > 1 && (
-        <div
-          className="mt-3 flex justify-center gap-2"
-          role="tablist"
-          aria-label="Auktion wählen"
-        >
-          {slides.map((_, i) => (
-            <button
-              key={_.id}
-              type="button"
-              role="tab"
-              aria-selected={i === index}
-              aria-label={`Auktion ${i + 1} von ${slides.length}`}
-              onClick={() => {
-                if (i === index) return;
-                goTo(i);
-              }}
-              className={`size-1.5 rounded-full transition-colors ${
-                i === index
-                  ? "bg-slate-700"
-                  : "bg-slate-400/50 hover:bg-slate-500/80"
-              }`}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  return <HeroPublicAuctionDemo />;
 }
 
-/* ---------- AUCTION PREVIEW (statische Vorschau, Fallback wenn keine Live-Auktion) ---------- */
-function AuctionPreview() {
-  const [price, setPrice] = useState(248);
-  const [bids, setBids] = useState(7);
-  const [time, setTime] = useState({ m: 12, s: 34 });
-
-  const previewBidRows = useMemo(
-    () =>
-      [
-        {
-          key: "a",
-          bid: {
-            initials: "MG",
-            price,
-            ts: Date.now(),
-            verifiziert: true,
-            bewertung: 4.2,
-          } satisfies Bid,
-          time: "gerade eben",
-        },
-        {
-          key: "b",
-          bid: {
-            initials: "SA",
-            price: price + 8,
-            ts: Date.now(),
-            bewertung: 3.8,
-          } satisfies Bid,
-          time: "vor 34 s",
-        },
-        {
-          key: "c",
-          bid: {
-            initials: "UR",
-            price: price + 15,
-            ts: Date.now(),
-            bewertung: 5.0,
-          } satisfies Bid,
-          time: "vor 1 min",
-        },
-      ] as const,
-    [price],
-  );
-
-  useEffect(() => {
-    const t = setInterval(() => {
-      setPrice((p) => Math.max(189, p - Math.floor(Math.random() * 4 + 1)));
-      setBids((b) => b + 1);
-    }, 2800);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
-    const t = setInterval(() => {
-      setTime((x) => {
-        let { m, s } = x;
-        s -= 1;
-        if (s < 0) {
-          s = 59;
-          m = Math.max(0, m - 1);
-        }
-        return { m, s };
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  return (
-    <div className="relative">
-      <div className="absolute -inset-6 -z-10 rounded-[32px] bg-gradient-to-br from-white/10 to-white/0 blur-2xl" />
-      <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-2 shadow-2xl shadow-black/40 backdrop-blur-xl">
-        <div className="rounded-[22px] bg-white p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="grid size-8 place-items-center rounded-lg bg-[var(--color-brand-50)] text-[var(--color-brand-700)]">
-                <Truck className="size-4" />
-              </span>
-              <div className="text-xs font-medium text-slate-500">
-                Auftrag #A-2846
-              </div>
-            </div>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-              <span className="size-1.5 rounded-full bg-emerald-500 anim-live" />
-              LIVE
-            </span>
-          </div>
-
-          <div className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
-            <span className="text-slate-500">Von</span>
-            <span className="font-medium text-slate-900">Zürich HB</span>
-            <span className="text-slate-500">Nach</span>
-            <span className="font-medium text-slate-900">Bern, Länggasse</span>
-            <span className="text-slate-500">Art</span>
-            <span className="font-medium text-slate-900">
-              Umzug · 2-Zimmer · 3. Stock
-            </span>
-          </div>
-
-          <div className="mt-5 rounded-2xl bg-gradient-to-br from-[var(--color-brand-700)] to-[var(--color-brand-800)] p-5 text-white">
-            <div className="flex items-baseline justify-between">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-white/60">
-                  Aktuelles Führungsgebot
-                </div>
-                <div className="mt-1 flex items-baseline gap-1">
-                  <span className="text-4xl font-extrabold tabular-nums">
-                    CHF {price}
-                  </span>
-                  <span className="anim-bid text-xs font-semibold text-emerald-300">
-                    ▼
-                  </span>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-[11px] uppercase tracking-wider text-white/60">
-                  Endet in
-                </div>
-                <div className="mt-1 font-mono text-2xl font-bold tabular-nums">
-                  {String(time.m).padStart(2, "0")}:
-                  {String(time.s).padStart(2, "0")}
-                </div>
-              </div>
-            </div>
-            <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/15">
-              <div
-                className="h-full rounded-full bg-[var(--color-accent-400)] transition-all"
-                style={{ width: `${Math.min(100, (60 - time.m) * 1.6)}%` }}
-              />
-            </div>
-            <div className="mt-3 flex items-center justify-between text-xs text-white/70">
-              <span>{bids} Gebote</span>
-              <span>Startpreis: CHF 320</span>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-2">
-            {previewBidRows.map((row) => (
-              <div
-                key={row.key}
-                className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-sm"
-              >
-                <GebotszeileRow bid={row.bid} timeLabel={row.time} />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- TRUST BAR ---------- */
 function TrustBar() {
   const items = [
     "Swiss Made",
@@ -3562,14 +3601,14 @@ function HowItWorks() {
   const steps = [
     {
       n: "01",
-      title: "Transport ausschreiben",
-      text: "Start, Ziel, Art des Transports, optionale Notizen und Auktionsdauer – in unter 60 Sekunden.",
+      title: "Auftrag erfassen",
+      text: "Start, Ziel, Art des Auftrags, optionale Notizen und Auktionsdauer – in unter 60 Sekunden.",
       icon: <Pencil className="size-5" />,
     },
     {
       n: "02",
       title: "Live unterboten werden",
-      text: "Transporteure geben in Echtzeit Gebote ab. Du siehst den niedrigsten Preis sofort.",
+      text: "Anbieter geben in Echtzeit Gebote ab. Du siehst den niedrigsten Preis sofort.",
       icon: <Bolt className="size-5" />,
     },
     {
@@ -3623,7 +3662,7 @@ function Audience() {
         <SectionHeader
           eyebrow="Für wen"
           title="Zwei Seiten. Ein fairer Marktplatz."
-          subtitle="Ob du transportieren lassen oder transportieren willst – 321 meins bringt euch direkt zusammen."
+          subtitle="Ob Umzug, Reinigung oder Transport – 321 meins bringt Auftraggeber und Anbieter direkt zusammen."
         />
 
         <div className="mt-8 grid gap-6 lg:grid-cols-2">
@@ -3633,11 +3672,11 @@ function Audience() {
             icon={<User className="size-5" />}
             title="Stelle ein, lehn dich zurück, spar bares Geld."
             bullets={[
-              "Start- und Zielort, Art des Transports, Notizen",
+              "Start- und Zielort, Art des Auftrags, Notizen",
               "Auktionsdauer frei wählbar (Tage, Stunden, Minuten, Sekunden)",
               "Live den niedrigsten Preis sehen",
               "Kein Match? Du kannst deine Auktion jederzeit erneut starten",
-              "Sichere Bezahlung mit QR-Code: Dein Geld wird erst nach erfolgreicher Lieferung an den Transporteur überwiesen.",
+              "Sichere Bezahlung mit QR-Code: Dein Geld wird erst nach erfolgreicher Ausführung an den Anbieter überwiesen.",
             ]}
             cta="Als Auftraggeber registrieren"
             registrationRole="auftraggeber"
@@ -3645,7 +3684,7 @@ function Audience() {
 
           <FeatureCard
             variant="secondary"
-            tag="Für Transporteure"
+            tag="Für Anbieter"
             icon={<Truck className="size-5" />}
             title="Hol dir Aufträge – zum Preis, den du willst."
             bullets={[
@@ -3655,7 +3694,7 @@ function Audience() {
               "Keine Grundgebühr",
               "Sichere Lieferbestätigung per QR-Code-Scan: Die Zahlung wird automatisch ausgelöst, sobald du den QR-Code beim Empfänger gescannt hast.",
             ]}
-            cta="Als Transporteur registrieren"
+            cta="Als Anbieter registrieren"
             registrationRole="transporteur"
           />
         </div>
@@ -3750,19 +3789,19 @@ function FeatureCard({
 function Testimonials() {
   const quotes = [
     {
-      text: "Statt drei Tage Angebote einzuholen hatte ich in 20 Minuten den besten Preis – 38 % unter meinem ersten Voranschlag.",
+      text: "Für meinen Umzug hatte ich statt drei Tage Offerten einzuholen in 20 Minuten den besten Preis – 38 % unter meinem ersten Voranschlag.",
       firstName: "Sandra",
       lastNameInitial: "M",
       rating: 5,
     },
     {
-      text: "Als kleine Speditionsfirma bekommen wir endlich planbare Aufträge, ohne auf Vergleichsportalen zu verlieren.",
+      text: "Als kleiner Anbieter bekommen wir endlich planbare Aufträge – vom Transport bis zum Umzug, ohne auf Vergleichsportalen zu verlieren.",
       firstName: "Marco",
       lastNameInitial: "R",
       rating: 5,
     },
     {
-      text: "Transparent, fair und richtig schnell. Ich habe meinen Klaviertransport zum Fixpreis bekommen – inklusive Versicherung.",
+      text: "Meine Endreinigung mit Abgabegarantie war in Minuten vergeben – transparent, fair und zum Fixpreis. Wohnung sauber übergeben.",
       firstName: "Elena",
       lastNameInitial: "K",
       rating: 5,
@@ -3773,7 +3812,7 @@ function Testimonials() {
       <div className="mx-auto max-w-6xl px-5">
         <SectionHeader
           eyebrow="Stimmen aus der Community"
-          title="Kunden und Transporteure, die uns vertrauen"
+          title="Kunden und Anbieter, die uns vertrauen"
           subtitle="Über 4'000 abgeschlossene Auktionen – hier sind ein paar Stimmen."
         />
 
@@ -3830,8 +3869,8 @@ function LandingMidRegisterCta() {
           Bereit, selbst zu sparen?
         </h2>
         <p className="mt-4 text-base leading-relaxed text-slate-600 md:text-lg">
-          Stell deinen Transport jetzt ein – die ersten Gebote kommen meist
-          innerhalb weniger Minuten.
+          Stell deinen Auftrag jetzt ein – ob Umzug, Reinigung oder Transport.
+          Die ersten Gebote kommen meist innerhalb weniger Minuten.
         </p>
         <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
           <button
@@ -3847,7 +3886,7 @@ function LandingMidRegisterCta() {
             onClick={() => openRegistration("transporteur")}
             className="btn-action-shine inline-flex items-center justify-center gap-2 rounded-full border-2 border-white bg-black px-6 py-4 text-sm font-semibold text-white transition-colors hover:bg-slate-950"
           >
-            Als Transporteur starten
+            Als Anbieter starten
             <ArrowRight className="size-4" />
           </button>
         </div>
@@ -3888,20 +3927,20 @@ function Stats() {
 /* ---------- FAQ ---------- */
 const FAQ_AUFTRAGGEBER = [
   {
-    q: "Wie funktioniert eine Transport-Auktion?",
-    a: "Du stellst deinen Transport mit Start- und Zieladresse, Abhol- und Lieferdatum sowie optionalen Notizen und Bildern ein. Transporteure geben live Gebote ab und unterbieten sich gegenseitig. Du siehst den niedrigsten Preis in Echtzeit.",
+    q: "Wie funktioniert eine Auktion?",
+    a: "Du erfasst deinen Auftrag mit Start- und Zieladresse, Abhol- und Lieferdatum sowie optionalen Notizen und Bildern. Anbieter geben live Gebote ab und unterbieten sich gegenseitig. Du siehst den niedrigsten Preis in Echtzeit.",
   },
   {
     q: "Was kostet die Nutzung von 321 meins?",
-    a: "Das Einstellen eines Transports und die Auktion sind für dich als Auftraggeber komplett kostenlos. Du zahlst nur den Preis des Gebots, das du am Ende akzeptierst. Keine versteckten Gebühren.",
+    a: "Das Erfassen eines Auftrags und die Auktion sind für dich als Auftraggeber komplett kostenlos. Du zahlst nur den Preis des Gebots, das du am Ende akzeptierst. Keine versteckten Gebühren.",
   },
   {
     q: "Wie schnell bekomme ich Gebote?",
     a: "In der Regel trifft das erste Gebot innerhalb von wenigen Minuten ein. Die meisten Auktionen haben nach 10–15 Minuten mehrere Gebote.",
   },
   {
-    q: "Sehe ich, wer transportiert?",
-    a: "Während der Auktion sind Transporteure anonym (nur als Kürzel sichtbar). Du siehst aber ihre Sterne-Bewertung und ob sie verifiziert sind (V). Erst nachdem du den Auftrag erteilt hast, erhältst du die vollen Kontaktdaten des Transporteurs.",
+    q: "Sehe ich, wer meinen Auftrag ausführt?",
+    a: "Während der Auktion sind Anbieter anonym (nur als Kürzel sichtbar). Du siehst aber ihre Sterne-Bewertung und ob sie verifiziert sind (V). Erst nachdem du den Auftrag erteilt hast, erhältst du die vollen Kontaktdaten des Anbieters.",
   },
   {
     q: "Kann ich ein Gebot ablehnen?",
@@ -3909,15 +3948,15 @@ const FAQ_AUFTRAGGEBER = [
   },
   {
     q: "Wie läuft die Bezahlung ab?",
-    a: "Nachdem du den Auftrag erteilst, wirst du zur sicheren Bezahlung über Stripe weitergeleitet. Du kannst per TWINT, Kreditkarte oder Apple/Google Pay bezahlen. Der Betrag wird reserviert, aber erst nach erfolgreicher Lieferung an den Transporteur ausgezahlt.",
+    a: "Nachdem du den Auftrag erteilst, wirst du zur sicheren Bezahlung über Stripe weitergeleitet. Du kannst per TWINT, Kreditkarte oder Apple/Google Pay bezahlen. Der Betrag wird reserviert, aber erst nach erfolgreicher Ausführung an den Anbieter ausgezahlt.",
   },
   {
     q: "Was ist der QR-Code und wie funktioniert er?",
-    a: "Nach deiner Bezahlung erhältst du einen einmaligen QR-Code. Leite diesen an den Empfänger der Ware weiter. Der Transporteur scannt den QR-Code bei der Übergabe mit seinem Handy – das bestätigt die erfolgreiche Lieferung und löst die Zahlung aus.",
+    a: "Nach deiner Bezahlung erhältst du einen einmaligen QR-Code. Leite diesen an den Empfänger weiter. Der Anbieter scannt den QR-Code bei der Übergabe mit seinem Handy – das bestätigt die erfolgreiche Ausführung und löst die Zahlung aus.",
   },
   {
-    q: "Wie kontaktiere ich den Transporteur?",
-    a: "Nach der Auftragserteilung siehst du die vollständigen Kontaktdaten des Transporteurs (Name, Telefon, E-Mail). Du kannst ihn direkt über die angezeigten Daten erreichen.",
+    q: "Wie kontaktiere ich den Anbieter?",
+    a: "Nach der Auftragserteilung siehst du die vollständigen Kontaktdaten des Anbieters (Name, Telefon, E-Mail). Du kannst ihn direkt über die angezeigten Daten erreichen.",
   },
   {
     q: "Was passiert, wenn keine Gebote eingehen?",
@@ -3925,11 +3964,11 @@ const FAQ_AUFTRAGGEBER = [
   },
   {
     q: "Wie sicher ist 321 meins?",
-    a: "Deine Sicherheit hat für uns höchste Priorität. 321 meins ist komplett DSG-konform, alle Daten werden verschlüsselt in der Schweiz gehostet. Zahlungen laufen ausschliesslich über unseren zertifizierten Partner Stripe – weder wir noch Dritte haben Zugriff auf deine Zahlungsdaten. Für Auftraggeber: Dein Geld wird bei Auftragserteilung sicher bei Stripe hinterlegt, aber erst dann an den Transporteur überwiesen, wenn die Lieferung beim Empfänger angekommen ist – bestätigt durch den Scan des QR-Codes. Transporteure werden zudem vor der Freischaltung manuell geprüft (Versicherungsnachweis, UID-Nummer). Für Transporteure: Das Geld des Auftraggebers liegt nach der Auftragserteilung sicher bei Stripe bereit. Sobald du den QR-Code beim Empfänger gescannt hast, wird die Zahlung automatisch an dich ausgelöst. Transparent. Fair. Sicher – für beide Seiten.",
+    a: "Deine Sicherheit hat für uns höchste Priorität. 321 meins ist komplett DSG-konform, alle Daten werden verschlüsselt in der Schweiz gehostet. Zahlungen laufen ausschliesslich über unseren zertifizierten Partner Stripe – weder wir noch Dritte haben Zugriff auf deine Zahlungsdaten. Für Auftraggeber: Dein Geld wird bei Auftragserteilung sicher bei Stripe hinterlegt, aber erst dann an den Anbieter überwiesen, wenn die Ausführung beim Empfänger bestätigt ist – durch den Scan des QR-Codes. Anbieter werden zudem vor der Freischaltung manuell geprüft (Versicherungsnachweis, UID-Nummer). Für Anbieter: Das Geld des Auftraggebers liegt nach der Auftragserteilung sicher bei Stripe bereit. Sobald du den QR-Code beim Empfänger gescannt hast, wird die Zahlung automatisch an dich ausgelöst. Transparent. Fair. Sicher – für beide Seiten.",
   },
   {
-    q: "Wer haftet, wenn beim Transport etwas beschädigt wird oder der Transporteur nicht erscheint?",
-    a: "Der Transportvertrag kommt direkt zwischen dir und dem Transporteur zustande. 321 meins stellt ausschliesslich die Plattform zur Vermittlung bereit und übernimmt keinerlei Haftung für Schäden, Verlust, Verspätung oder das Nichterscheinen des Transporteurs. Die Haftung liegt beim Transporteur, der vor der Freischaltung einen gültigen Versicherungsnachweis vorweisen muss. Erscheint ein Transporteur nicht zur Abholung, greift unsere QR-Code-Sicherung: Da dein Geld erst nach erfolgreicher Lieferung und Scan des QR-Codes überwiesen wird, entsteht dir kein finanzieller Schaden. Du kannst die Auktion danach erneut starten. Nach erfolgreicher Zahlung erhältst du eine Auftragsbestätigung als PDF mit allen relevanten Daten – als Nachweis für deine Unterlagen. Details regeln unsere AGB.",
+    q: "Wer haftet, wenn bei der Ausführung etwas beschädigt wird oder der Anbieter nicht erscheint?",
+    a: "Der Vertrag kommt direkt zwischen dir und dem Anbieter zustande. 321 meins stellt ausschliesslich die Plattform zur Vermittlung bereit und übernimmt keinerlei Haftung für Schäden, Verlust, Verspätung oder das Nichterscheinen des Anbieters. Die Haftung liegt beim Anbieter, der vor der Freischaltung einen gültigen Versicherungsnachweis vorweisen muss. Erscheint ein Anbieter nicht zum Termin, greift unsere QR-Code-Sicherung: Da dein Geld erst nach erfolgreicher Ausführung und Scan des QR-Codes überwiesen wird, entsteht dir kein finanzieller Schaden. Du kannst die Auktion danach erneut starten. Nach erfolgreicher Zahlung erhältst du eine Auftragsbestätigung als PDF mit allen relevanten Daten – als Nachweis für deine Unterlagen. Details regeln unsere AGB.",
   },
 ] as const;
 
@@ -3952,7 +3991,7 @@ const FAQ_TRANSPORTEURE = [
   },
   {
     q: "Was bedeutet das V-Symbol?",
-    a: "Das V zeigt an, dass ein Transporteur offiziell verifiziert ist. Wir haben seinen Versicherungsnachweis und seine UID-Nummer manuell geprüft. Verifizierte Transporteure geniessen mehr Vertrauen bei Auftraggebern.",
+    a: "Das V zeigt an, dass ein Anbieter offiziell verifiziert ist. Wir haben seinen Versicherungsnachweis und seine UID-Nummer manuell geprüft. Verifizierte Anbieter geniessen mehr Vertrauen bei Auftraggebern.",
   },
   {
     q: "Wie erhalte ich mein Geld?",
@@ -3968,11 +4007,11 @@ const FAQ_TRANSPORTEURE = [
   },
   {
     q: "Wie sicher ist 321 meins?",
-    a: "Deine Sicherheit hat für uns höchste Priorität. 321 meins ist komplett DSG-konform, alle Daten werden verschlüsselt in der Schweiz gehostet. Zahlungen laufen ausschliesslich über unseren zertifizierten Partner Stripe – weder wir noch Dritte haben Zugriff auf deine Zahlungsdaten. Für Auftraggeber: Dein Geld wird bei Auftragserteilung sicher bei Stripe hinterlegt, aber erst dann an den Transporteur überwiesen, wenn die Lieferung beim Empfänger angekommen ist – bestätigt durch den Scan des QR-Codes. Transporteure werden zudem vor der Freischaltung manuell geprüft (Versicherungsnachweis, UID-Nummer). Für Transporteure: Das Geld des Auftraggebers liegt nach der Auftragserteilung sicher bei Stripe bereit. Sobald du den QR-Code beim Empfänger gescannt hast, wird die Zahlung automatisch an dich ausgelöst. Transparent. Fair. Sicher – für beide Seiten.",
+    a: "Deine Sicherheit hat für uns höchste Priorität. 321 meins ist komplett DSG-konform, alle Daten werden verschlüsselt in der Schweiz gehostet. Zahlungen laufen ausschliesslich über unseren zertifizierten Partner Stripe – weder wir noch Dritte haben Zugriff auf deine Zahlungsdaten. Für Auftraggeber: Dein Geld wird bei Auftragserteilung sicher bei Stripe hinterlegt, aber erst dann an den Anbieter überwiesen, wenn die Ausführung beim Empfänger bestätigt ist – durch den Scan des QR-Codes. Anbieter werden zudem vor der Freischaltung manuell geprüft (Versicherungsnachweis, UID-Nummer). Für Anbieter: Das Geld des Auftraggebers liegt nach der Auftragserteilung sicher bei Stripe bereit. Sobald du den QR-Code beim Empfänger gescannt hast, wird die Zahlung automatisch an dich ausgelöst. Transparent. Fair. Sicher – für beide Seiten.",
   },
   {
     q: "Was passiert, wenn der Auftraggeber nicht vor Ort ist oder die Ware nicht bereitstellt?",
-    a: "Der Transportvertrag kommt direkt zwischen dir und dem Auftraggeber zustande. Vor Fahrtantritt hast du Zugriff auf die vollständigen Kontaktdaten des Absenders – inklusive Adresse, Telefonnummer und E-Mail. Wir empfehlen, vor der Abfahrt kurz Kontakt aufzunehmen, um die Übergabe zu bestätigen. Erscheint der Auftraggeber nicht oder ist die Ware nicht bereit, kannst du den Auftrag nicht abschliessen, und es wird keine Zahlung ausgelöst (QR-Code-Sicherung). 321 meins haftet nicht für entstandene Leerfahrten, Ausfälle oder sonstige Schäden, die aus dem Verhalten des Auftraggebers entstehen. Nach erfolgreicher Auftragserteilung erhältst du eine Transportbestätigung als PDF mit allen relevanten Daten – als Nachweis für deine Unterlagen. Details regeln unsere AGB.",
+    a: "Der Vertrag kommt direkt zwischen dir und dem Auftraggeber zustande. Vor dem Termin hast du Zugriff auf die vollständigen Kontaktdaten des Auftraggebers – inklusive Adresse, Telefonnummer und E-Mail. Wir empfehlen, vorab kurz Kontakt aufzunehmen, um den Termin zu bestätigen. Erscheint der Auftraggeber nicht oder sind die Voraussetzungen nicht erfüllt, kannst du den Auftrag nicht abschliessen, und es wird keine Zahlung ausgelöst (QR-Code-Sicherung). 321 meins haftet nicht für entstandene Leerfahrten, Ausfälle oder sonstige Schäden, die aus dem Verhalten des Auftraggebers entstehen. Nach erfolgreicher Auftragserteilung erhältst du eine Auftragsbestätigung als PDF mit allen relevanten Daten – als Nachweis für deine Unterlagen. Details regeln unsere AGB.",
   },
 ] as const;
 
@@ -4066,9 +4105,15 @@ function FAQItem({
   );
 }
 
-/* ---------- CTA ---------- */
+/* ---------- CTA (öffentliche Landing) ---------- */
+/**
+ * Sichtbar NUR auf der öffentlichen Startseite.
+ * Rendert ausschliesslich Gast-Register-Block + ggf. Register-Form.
+ * Eingeloggte Nutzer sehen einen Hinweis mit Link zum Dashboard
+ * (kein TransporterDashboard, keine LiveAuctionTable auf der Landing!).
+ */
 function CTA() {
-  const { user, view, goHome, goToAuctionForm } = useAuth();
+  const { user } = useAuth();
   const [guestForm, setGuestForm] = useState<
     "auftraggeber" | "transporteur" | null
   >(null);
@@ -4095,24 +4140,34 @@ function CTA() {
     <section id="cta" className="pt-10">
       <div className="mx-auto max-w-5xl px-5">
         <div className="mb-10">
-          {user?.role === "transporteur" ? (
-            <TransporterDashboard />
-          ) : (
-            <>
-              <div className="relative overflow-hidden rounded-3xl bg-[var(--color-brand-800)] p-10 md:p-14">
-                <div className="absolute -right-24 -top-24 size-80 rounded-full bg-[var(--color-accent-500)]/30 blur-3xl" />
-                <div className="absolute -left-16 -bottom-16 size-64 rounded-full bg-[var(--color-brand-500)]/30 blur-3xl" />
-                <div className="relative grid gap-8 md:grid-cols-[1.4fr_1fr] md:items-center">
-                  <div>
-                    <h2 className="text-3xl font-extrabold leading-tight text-white md:text-4xl">
-                      Bereit, bares Geld zu sparen?
-                    </h2>
-                    <p className="mt-3 max-w-xl text-white/70">
-                      Stell deinen Transport jetzt ein – die ersten Gebote
-                      kommen meist innerhalb weniger Minuten.
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-3">
+          <div className="relative overflow-hidden rounded-3xl bg-[var(--color-brand-800)] p-10 md:p-14">
+            <div className="absolute -right-24 -top-24 size-80 rounded-full bg-[var(--color-accent-500)]/30 blur-3xl" />
+            <div className="absolute -left-16 -bottom-16 size-64 rounded-full bg-[var(--color-brand-500)]/30 blur-3xl" />
+            <div className="relative grid gap-8 md:grid-cols-[1.4fr_1fr] md:items-center">
+              <div>
+                <h2 className="text-3xl font-extrabold leading-tight text-white md:text-4xl">
+                  {user
+                    ? `Willkommen zurück, ${user.username}.`
+                    : "Bereit, bares Geld zu sparen?"}
+                </h2>
+                <p className="mt-3 max-w-xl text-white/70">
+                  {user
+                    ? "Deine Auktionen, Gebote und der Live-Bereich liegen in deinem Dashboard."
+                    : "Stell deinen Transport jetzt ein – die ersten Gebote kommen meist innerhalb weniger Minuten."}
+                </p>
+              </div>
+              <div className="flex flex-col gap-3">
+                {user ? (
+                  <button
+                    type="button"
+                    onClick={() => goToDashboardHash()}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-accent-500)] px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 hover:bg-[var(--color-accent-600)] transition-colors btn-action-shine"
+                  >
+                    Zum Dashboard
+                    <ArrowRight className="size-4" />
+                  </button>
+                ) : (
+                  <>
                     <button
                       type="button"
                       onClick={() => setGuestForm("auftraggeber")}
@@ -4130,37 +4185,137 @@ function CTA() {
                       aria-controls="transporteur-registrierung"
                       className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/5 px-6 py-4 text-sm font-semibold text-white backdrop-blur hover:bg-white/10 transition-colors btn-action-shine"
                     >
-                      Als Transporteur registrieren
+                      Als Anbieter registrieren
                     </button>
-                  </div>
-                </div>
+                  </>
+                )}
               </div>
+            </div>
+          </div>
 
-              {user && user.role === "auftraggeber" ? (
-                <>
-                  {view === "home" && (
-                    <AuthenticatedCTA
-                      username={user.username}
-                      onStart={() => goToAuctionForm()}
-                    />
-                  )}
-                  {view === "auction-form" && (
-                    <AuctionForm onCancel={goHome} />
-                  )}
-                  {view === "meine-auktionen" && <MyAuctionsList />}
-                  {view === "auction-detail" && <AuctionDetail />}
-                </>
-              ) : !user ? (
-                <>
-                  {guestForm === "auftraggeber" && <RegistrationForm />}
-                  {guestForm === "transporteur" && (
-                    <TransporteurRegistrationForm />
-                  )}
-                </>
-              ) : null}
+          {!user && (
+            <>
+              {guestForm === "auftraggeber" && <RegistrationForm />}
+              {guestForm === "transporteur" && (
+                <TransporteurRegistrationForm />
+              )}
             </>
           )}
         </div>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- DASHBOARD-PAGE (eingeloggter Bereich) ---------- */
+/**
+ * Eigene Route `#/dashboard`. Hier – und NUR hier – wird die echte
+ * `LiveAuctionTable` (via `TransporterDashboard`) bzw. das Auftraggeber-UI
+ * mit echten Auktionen gerendert. Niemals auf der Landing.
+ */
+function DashboardPage() {
+  const { user, view, goHome, openAuftragErfassen, openLogin, addAuction, goToMyAuctions } = useAuth();
+
+  if (!user) {
+    return (
+      <section className="py-16">
+        <div className="mx-auto max-w-xl px-5 text-center">
+          <h1 className="text-3xl font-extrabold tracking-tight text-[var(--color-ink)] md:text-4xl">
+            Dashboard
+          </h1>
+          <p className="mt-3 text-[var(--color-muted)]">
+            Bitte melde dich an, um dein Dashboard zu sehen.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => openLogin()}
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-brand-700)] px-6 py-3 text-sm font-semibold text-white hover:bg-[var(--color-brand-800)] btn-action-shine"
+            >
+              Login
+            </button>
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.hash = "";
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Zur Startseite
+            </a>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (user.role === "transporteur") {
+    return (
+      <section className="py-8 md:py-12">
+        <div className="mx-auto max-w-6xl px-5">
+          <TransporterDashboard />
+        </div>
+      </section>
+    );
+  }
+
+  // user.role === "auftraggeber"
+  const isFormView =
+    view === "auction-form" ||
+    view === "umzug-form" ||
+    view === "reinigung-form" ||
+    view === "umzug-reinigung-form";
+  const backToStart = () => {
+    goHome();
+    goToLandingHome();
+  };
+  return (
+    <section className="py-8 md:py-12">
+      <div className="mx-auto max-w-5xl px-5 space-y-6">
+        {isFormView && (
+          <button
+            type="button"
+            onClick={backToStart}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 btn-action-shine"
+          >
+            <Home className="size-4" />
+            Zurück zur Startseite
+          </button>
+        )}
+        {view === "home" && (
+          <AuthenticatedCTA
+            username={user.username}
+            onStart={() => openAuftragErfassen()}
+          />
+        )}
+        {view === "auction-form" && <AuctionForm onCancel={goHome} />}
+        {view === "umzug-form" && (
+          <UmzugForm
+            onCancel={goHome}
+            addAuction={addAuction}
+            goToMyAuctions={goToMyAuctions}
+            notesContactBlocked={auctionNotesContainContactInfo}
+          />
+        )}
+        {view === "reinigung-form" && (
+          <ReinigungForm
+            onCancel={goHome}
+            addAuction={addAuction}
+            goToMyAuctions={goToMyAuctions}
+            notesContactBlocked={auctionNotesContainContactInfo}
+          />
+        )}
+        {view === "umzug-reinigung-form" && (
+          <UmzugReinigungKombiForm
+            onCancel={goHome}
+            addAuction={addAuction}
+            goToMyAuctions={goToMyAuctions}
+            notesContactBlocked={auctionNotesContainContactInfo}
+          />
+        )}
+        {view === "meine-auktionen" && <MyAuctionsList />}
+        {view === "auction-detail" && <AuctionDetail />}
       </div>
     </section>
   );
@@ -4179,19 +4334,33 @@ function TransporterDashboard() {
     refreshPendingDeliveryRatings,
   } = useAuth();
   const now = useNow(250);
+
+  useEffect(() => {
+    if (!useSupabase || user?.role !== "transporteur") return;
+    void refreshAuctions();
+  }, [user?.userId, user?.role, refreshAuctions]);
+
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [bidOpenId, setBidOpenId] = useState<string | null>(null);
-  const [bidInput, setBidInput] = useState<Record<string, string>>({});
-  const [bidError, setBidError] = useState<Record<string, string | null>>({});
+  /** Welche Auktion wird oben in der Live-Tabelle angezeigt? null = erste aktive. */
+  const [focusedAuctionId, setFocusedAuctionId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!transporterBidFocusId) return;
     const row = auctions.find((x) => x.id === transporterBidFocusId);
     const rowKey = row?.auctionUuid ?? transporterBidFocusId;
     setExpandedIds((s) => new Set(s).add(rowKey));
-    setBidOpenId(rowKey);
+    setFocusedAuctionId(transporterBidFocusId);
     setTransporterBidFocus(null);
   }, [transporterBidFocusId, setTransporterBidFocus, auctions]);
+
+  const focusAuctionInLiveTable = (auctionId: string) => {
+    setFocusedAuctionId(auctionId);
+    requestAnimationFrame(() => {
+      document
+        .getElementById("transporteur-live-auktion")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
 
   const toggleRow = (id: string) => {
     setExpandedIds((prev) => {
@@ -4202,31 +4371,16 @@ function TransporterDashboard() {
     });
   };
 
-  const activeAuctions = auctions
-    .filter((a) => isAuctionLive(a, now))
+  /** Bereits per Hero-Query (`status=live`, `endet_am`) gefiltert – kein zweites Client-Filter. */
+  const activeAuctions = [...auctions]
+    .filter((a) => sbAukt.isDashboardVisibleAuction(a, now))
     .sort((a, b) => a.startedAt - b.startedAt);
 
-  const expiredAuctions = auctions
-    .filter((a) => {
-      const end = a.startedAt + a.durationMs;
-      if (now < end) return false;
-      if (isAuctionEndedRecently(a, now)) return true;
-      if (user?.role === "transporteur" && transporteurHatZuschlag(a, user)) {
-        const refMs = a.awardedAt ?? end;
-        if (now - refMs < 14 * 24 * 60 * 60 * 1000) return true;
-      }
-      return false;
-    })
-    .sort((a, b) => b.startedAt + b.durationMs - (a.startedAt + a.durationMs));
-
-  const myBidAuctions = auctions
-    .filter(
-      (a) =>
-        user &&
-        transporterHatGebot(a, user.username) &&
-        isAuctionLive(a, now),
-    )
-    .sort((a, b) => b.startedAt - a.startedAt);
+  const featuredLive =
+    (focusedAuctionId &&
+      activeAuctions.find((a) => a.id === focusedAuctionId)) ||
+    activeAuctions[0] ||
+    null;
 
   const tableHeader = (
     <thead>
@@ -4250,14 +4404,22 @@ function TransporterDashboard() {
   ) => {
     const rowKey = a.auctionUuid ?? a.id;
     const expanded = expandedIds.has(rowKey);
-    const cap = getBidCap(a);
     const leader = getLowestBid(a);
-    const remaining = a.startedAt + a.durationMs - now;
+    const remaining = getAuctionRemainingMs(a, now);
     const sortedBids = [...a.bids].sort((x, y) => y.ts - x.ts);
     const hideSensitiveEndedExpand =
       opts.actionMode === "ended" &&
       user?.role === "transporteur" &&
       !transporteurHatZuschlag(a, user);
+
+    /** Klick auf Bid-Modus-Zeile lädt die Auktion in die Live-Tabelle oben. */
+    const handleBidRowClick = (e: React.MouseEvent | React.KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest("[data-no-row-toggle]")) return;
+      toggleRow(rowKey);
+      if (opts.actionMode === "bid") {
+        focusAuctionInLiveTable(a.id);
+      }
+    };
 
     return (
       <>
@@ -4265,23 +4427,26 @@ function TransporterDashboard() {
           key={rowKey}
           role="button"
           tabIndex={0}
-          onClick={(e) => {
-            if ((e.target as HTMLElement).closest("[data-no-row-toggle]"))
-              return;
-            toggleRow(rowKey);
-          }}
+          onClick={handleBidRowClick}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              toggleRow(rowKey);
+              handleBidRowClick(e);
             }
           }}
           className={`cursor-pointer border-b border-slate-100 text-sm transition-colors hover:bg-slate-50/80 ${
             expanded ? "bg-slate-50/50" : ""
+          } ${
+            opts.actionMode === "bid" && featuredLive?.id === a.id
+              ? "bg-[var(--color-brand-50)]/60"
+              : ""
           }`}
         >
           <td className="px-3 py-2.5 font-semibold text-slate-900">
-            #{a.id}
+            <div className="flex flex-col gap-1.5">
+              <span>#{a.id}</span>
+              <DienstleistungTypBadge auction={a} />
+            </div>
           </td>
           <td className="px-3 py-2.5 text-slate-700">{displayOrt(a.startort)}</td>
           <td className="px-3 py-2.5 text-slate-700">{displayOrt(a.zielort)}</td>
@@ -4293,7 +4458,7 @@ function TransporterDashboard() {
           </td>
           <td className="px-3 py-2.5">
             <span className="font-semibold tabular-nums text-slate-900">
-              CHF {cap}
+              {formatTableFuehrungsgebote(a)}
             </span>
             <span className="text-slate-400"> · </span>
             <span className="font-bold text-slate-700">
@@ -4316,20 +4481,15 @@ function TransporterDashboard() {
             {opts.showCountdown ? formatCountdownHms(remaining) : "—"}
           </td>
           <td className="px-3 py-2.5 text-right">
-            {opts.actionMode === "bid" && (
-              <button
-                type="button"
-                data-no-row-toggle
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setExpandedIds((s) => new Set(s).add(rowKey));
-                  setBidOpenId(rowKey);
-                  setBidError((be) => ({ ...be, [rowKey]: null }));
+            {opts.actionMode === "bid" && user && (
+              <TransporterMyBidStatusCell
+                auction={a}
+                viewer={{
+                  username: user.username,
+                  initials: user.initials,
                 }}
-                className="inline-flex cursor-pointer items-center justify-center rounded-full bg-[var(--color-accent-500)] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[var(--color-accent-600)] btn-action-shine"
-              >
-                Jetzt bieten
-              </button>
+                onAction={() => focusAuctionInLiveTable(a.id)}
+              />
             )}
             {opts.actionMode === "ended" && (
               <>
@@ -4376,7 +4536,11 @@ function TransporterDashboard() {
                       <ArrowRight className="size-3" />
                     </button>
                   </div>
-                ) : user && transporterHatGebot(a, user.username) ? (
+                ) : user &&
+                  transporterHatGebot(a, {
+                    username: user.username,
+                    initials: user.initials,
+                  }) ? (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-600">
                     <span className="size-1.5 rounded-full bg-slate-400" />
                     Beendet
@@ -4392,18 +4556,11 @@ function TransporterDashboard() {
             {opts.actionMode === "status" && user && (
               <TransporterMyBidStatusCell
                 auction={a}
-                username={user.username}
-                onRebid={() => {
-                  setTransporterBidFocus(a.id);
-                  requestAnimationFrame(() => {
-                    document
-                      .getElementById("transporter-aktive-auktionen")
-                      ?.scrollIntoView({
-                        behavior: "smooth",
-                        block: "start",
-                      });
-                  });
+                viewer={{
+                  username: user.username,
+                  initials: user.initials,
                 }}
+                onAction={() => focusAuctionInLiveTable(a.id)}
               />
             )}
           </td>
@@ -4411,6 +4568,7 @@ function TransporterDashboard() {
         {expanded && (
           <tr key={`${rowKey}-ex`} className="border-b border-slate-100 bg-white">
             <td colSpan={9} className="px-4 py-4">
+              <AuftragServiceDetailsView auction={a} compact />
               {a.notizen?.trim() && opts.actionMode !== "ended" && (
                 <div className="rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2 text-sm text-slate-700">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -4481,6 +4639,7 @@ function TransporterDashboard() {
                       <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                         Auftragsdetails
                       </div>
+                      <AuftragServiceDetailsView auction={a} embedded />
                       {a.notizen?.trim() && (
                         <div>
                           <span className="text-xs font-medium text-slate-500">
@@ -4534,63 +4693,24 @@ function TransporterDashboard() {
                   )}
                 </ul>
               </div>
-              {opts.actionMode === "bid" && bidOpenId === rowKey && (
+              {opts.actionMode === "bid" && (
                 <div
-                  className="mt-4 rounded-2xl border border-slate-200 bg-[var(--color-surface-alt)] p-4"
+                  className="mt-4 rounded-2xl border border-[var(--color-brand-100)] bg-[var(--color-brand-50)]/40 p-4 text-sm text-[var(--color-muted)]"
                   data-no-row-toggle
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <label className="block text-sm font-semibold text-slate-800">
-                    Dein Gebot (CHF)
-                  </label>
-                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      value={bidInput[rowKey] ?? ""}
-                      onChange={(e) => {
-                        setBidInput((p) => ({
-                          ...p,
-                          [rowKey]: e.target.value,
-                        }));
-                        setBidError((be) => ({ ...be, [rowKey]: null }));
-                      }}
-                      placeholder={`Unter ${cap}`}
-                      className="w-full max-w-xs rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm tabular-nums outline-none focus:border-[var(--color-brand-500)] focus:ring-2 focus:ring-[var(--color-brand-500)]/20"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void (async () => {
-                          const raw = bidInput[rowKey]?.trim() ?? "";
-                          const num = Number(raw);
-                          if (!Number.isFinite(num) || num >= cap) {
-                            setBidError((be) => ({
-                              ...be,
-                              [rowKey]: `Dein Gebot muss unter CHF ${cap} liegen.`,
-                            }));
-                            return;
-                          }
-                          const err = await placeTransporterBid(a.id, num);
-                          if (err) {
-                            setBidError((be) => ({ ...be, [rowKey]: err }));
-                            return;
-                          }
-                          setBidInput((p) => ({ ...p, [rowKey]: "" }));
-                          setBidError((be) => ({ ...be, [rowKey]: null }));
-                          setBidOpenId(null);
-                        })();
-                      }}
-                      className="inline-flex items-center justify-center rounded-full bg-[var(--color-brand-700)] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[var(--color-brand-800)] btn-action-shine"
-                    >
-                      Gebot abgeben
-                    </button>
-                  </div>
-                  {bidError[rowKey] && (
-                    <p className="mt-2 text-sm font-medium text-red-600">
-                      {bidError[rowKey]}
-                    </p>
-                  )}
+                  Bieten erfolgt oben in der{" "}
+                  <a
+                    href="#transporteur-live-auktion"
+                    className="font-semibold text-[var(--color-brand-700)] underline-offset-2 hover:underline"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      focusAuctionInLiveTable(a.id);
+                    }}
+                  >
+                    Live-Auktion
+                  </a>
+                  .
                 </div>
               )}
             </td>
@@ -4609,7 +4729,7 @@ function TransporterDashboard() {
         <div className="flex flex-col gap-2 border-b border-slate-100 pb-5 md:flex-row md:items-end md:justify-between">
           <div>
             <h2 className="text-2xl font-extrabold tracking-tight text-[var(--color-ink)] md:text-3xl">
-              Transporteur-Dashboard
+              Anbieter-Dashboard
             </h2>
             <p className="mt-1 text-sm text-[var(--color-muted)]">
               Aktive Auktionen, kürzlich beendete Aufträge und deine Gebote –
@@ -4624,10 +4744,30 @@ function TransporterDashboard() {
           )}
         </div>
 
+        {featuredLive && (
+          <div className="mt-8" id="transporteur-live-auktion">
+            <h3 className="text-lg font-bold text-slate-900">Live-Auktion</h3>
+            <p className="mt-1 text-sm text-[var(--color-muted)]">
+              Aktuelle Auktion mit Gebotsfeld – unterbiete das Führungsgebot.
+            </p>
+            <div className="mt-4 max-w-xl">
+              <LiveAuctionTable
+                key={featuredLive.id}
+                auction={auctionToAuctionData(featuredLive, now)}
+                onPlaceBid={async (price) => {
+                  const err = await placeTransporterBid(featuredLive.id, price);
+                  if (!err) await refreshAuctions();
+                  return err;
+                }}
+              />
+            </div>
+          </div>
+        )}
         <div className="mt-8" id="transporter-aktive-auktionen">
           <h3 className="text-lg font-bold text-slate-900">
             Verfügbare aktive Auktionen
           </h3>
+          <DashboardCompletedVisibilityHint className="mt-2" />
           <div className="mt-3 overflow-x-auto rounded-2xl border border-slate-200">
             <table className="w-full min-w-[920px] border-collapse">
               {tableHeader}
@@ -4656,79 +4796,6 @@ function TransporterDashboard() {
           </div>
         </div>
 
-        <div className="mt-10">
-          <h3 className="text-lg font-bold text-slate-900">
-            Abgelaufene Auktionen (letzte 24 Stunden)
-          </h3>
-          <div className="mt-3 overflow-x-auto rounded-2xl border border-slate-200">
-            <table className="w-full min-w-[920px] border-collapse">
-              {tableHeader}
-              <tbody>
-                {expiredAuctions.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={9}
-                      className="px-4 py-8 text-center text-sm text-slate-500"
-                    >
-                      Keine abgelaufenen Auktionen in den letzten 24 Stunden.
-                    </td>
-                  </tr>
-                ) : (
-                  expiredAuctions.map((a) => (
-                    <Fragment key={a.auctionUuid ?? a.id}>
-                      {renderExpandableBlock(a, {
-                        showCountdown: false,
-                        actionMode: "ended",
-                      })}
-                    </Fragment>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="mt-10">
-          <h3 className="text-lg font-bold text-slate-900">Meine Gebote</h3>
-          <div className="mt-3 overflow-x-auto rounded-2xl border border-slate-200">
-            <table className="w-full min-w-[920px] border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 bg-[var(--color-brand-50)] text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                  <th className="px-3 py-2.5">Auftrag</th>
-                  <th className="px-3 py-2.5">Von</th>
-                  <th className="px-3 py-2.5">Nach</th>
-                  <th className="px-3 py-2.5">Lieferdatum</th>
-                  <th className="px-3 py-2.5">Masse/Gew.</th>
-                  <th className="px-3 py-2.5">Führungsg.</th>
-                  <th className="px-3 py-2.5">Gebote</th>
-                  <th className="px-3 py-2.5">Endet in</th>
-                  <th className="px-3 py-2.5 text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {myBidAuctions.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={9}
-                      className="px-4 py-8 text-center text-sm text-slate-500"
-                    >
-                      Du hast noch auf keine Auktion geboten.
-                    </td>
-                  </tr>
-                ) : (
-                  myBidAuctions.map((a) => (
-                    <Fragment key={a.auctionUuid ?? a.id}>
-                      {renderExpandableBlock(a, {
-                        showCountdown: isAuctionLive(a, now),
-                        actionMode: "status",
-                      })}
-                    </Fragment>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -4736,29 +4803,41 @@ function TransporterDashboard() {
 
 function TransporterMyBidStatusCell({
   auction,
-  username,
-  onRebid,
+  viewer,
+  onAction,
 }: {
   auction: Auction;
-  username: string;
-  onRebid: () => void;
+  viewer: TransporterBidViewer;
+  onAction: () => void;
 }) {
-  const now = useNow(1000);
-  const leader = getLowestBid(auction);
-  const leading = Boolean(leader && leader.bidderKey === username);
-  const isLive = isAuctionLive(auction, now);
+  const status = transporterBidStatus(auction, viewer);
 
-  if (leading) {
+  if (status === "leading") {
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
-        <span className="size-1.5 rounded-full bg-emerald-500" />
+      <span
+        aria-disabled="true"
+        className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200"
+      >
+        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
         Führend
       </span>
     );
   }
 
-  if (!isLive) {
-    return null;
+  if (status === "outbid") {
+    return (
+      <button
+        type="button"
+        data-no-row-toggle
+        onClick={(e) => {
+          e.stopPropagation();
+          onAction();
+        }}
+        className="status-underboten-pulse inline-flex cursor-pointer items-center justify-center rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-red-700 btn-action-shine"
+      >
+        Unterboten
+      </button>
+    );
   }
 
   return (
@@ -4767,11 +4846,11 @@ function TransporterMyBidStatusCell({
       data-no-row-toggle
       onClick={(e) => {
         e.stopPropagation();
-        onRebid();
+        onAction();
       }}
-      className="inline-flex cursor-pointer items-center justify-center rounded-full bg-[var(--color-accent-500)] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[var(--color-accent-600)] btn-action-shine"
+      className="inline-flex cursor-pointer items-center justify-center rounded-full bg-[var(--color-accent-500)] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[var(--color-accent-600)] btn-action-shine"
     >
-      Bieten
+      Jetzt bieten
     </button>
   );
 }
@@ -4796,11 +4875,11 @@ function AuthenticatedCTA({
             Eingeloggt als {username}
           </span>
           <h3 className="mt-3 text-2xl font-extrabold tracking-tight text-[var(--color-ink)] md:text-3xl">
-            Bereit für den nächsten Transport?
+            Bereit für den nächsten Auftrag?
           </h3>
           <p className="mt-2 max-w-xl text-sm text-[var(--color-muted)]">
-            Stell deine Auktion in unter einer Minute ein – Transporteure
-            unterbieten sich live.
+            Erfasse deine Auktion in unter einer Minute – Anbieter unterbieten
+            sich live.
           </p>
         </div>
         <button
@@ -4808,7 +4887,7 @@ function AuthenticatedCTA({
           onClick={onStart}
           className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-[var(--color-accent-500)] px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 hover:bg-[var(--color-accent-600)] transition-colors btn-action-shine"
         >
-          Transport ausschreiben
+          Auftrag erfassen
           <ArrowRight className="size-4" />
         </button>
       </div>
@@ -5445,6 +5524,28 @@ function TransporteurRegistrationForm() {
       const session =
         data.session ?? (await supabase.auth.getSession()).data.session;
       const u = session?.user;
+      if (u) {
+        const { error: profErr } = await supabase.from("transporteure").upsert(
+          {
+            id: u.id,
+            firmenname: form.firmenname.trim(),
+            vorname_kontakt: form.vornameKontakt.trim(),
+            name_kontakt: form.nameKontakt.trim(),
+            uid: form.uid.trim(),
+            strasse: form.strasse.trim(),
+            plz: form.plz.trim(),
+            ort: form.ort.trim(),
+            telefon: form.telefon.trim(),
+            email: form.email.trim(),
+            benutzername: form.benutzername.trim(),
+            kuerzel,
+          },
+          { onConflict: "id" },
+        );
+        if (profErr) {
+          console.warn("[transporteure] upsert after signUp", profErr);
+        }
+      }
       let sendTransporteurRegistrationMails = false;
       if (u && form.versicherung) {
         const safeName = form.versicherung.name.replace(/[^\w.-]+/g, "_");
@@ -5510,7 +5611,7 @@ function TransporteurRegistrationForm() {
       className="mt-8 rounded-3xl border border-slate-200 bg-white p-7 shadow-sm md:p-10 anim-fade-up"
     >
       <h3 className="text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">
-        Konto als Transporteur erstellen
+        Konto als Anbieter erstellen
       </h3>
       <p className="mt-2 text-sm text-slate-600">
         Schweizer Transportunternehmen – Registrierung kostenlos. Der
@@ -5725,7 +5826,7 @@ function TransporteurRegistrationForm() {
           type="submit"
           className="inline-flex items-center justify-center gap-2 rounded-full border-2 border-[var(--color-brand-800)] bg-transparent px-6 py-4 text-sm font-semibold text-[var(--color-brand-800)] hover:bg-[var(--color-brand-800)] hover:text-white transition-colors btn-action-shine"
         >
-          Als Transporteur registrieren
+          Als Anbieter registrieren
           <ArrowRight className="size-4" />
         </button>
       </div>
@@ -5870,6 +5971,7 @@ function auctionNotesContainContactInfo(notes: string): boolean {
 
 /* ---------- AUCTION FORM ---------- */
 type AuctionFormState = {
+  auftragsart: string;
   startort: string;
   zielort: string;
   empfVorname: string;
@@ -5888,6 +5990,7 @@ type AuctionFormState = {
 };
 
 const initialAuctionForm: AuctionFormState = {
+  auftragsart: "Transport",
   startort: "",
   zielort: "",
   empfVorname: "",
@@ -5921,23 +6024,6 @@ const emptyAbsender: AbsenderProfil = {
   ort: "",
 };
 
-type DurationValue = { days: number; hours: number; minutes: number };
-
-/** Ohne explizite Tage: nur Minuten/Stunden zählen (Default 1 Tag führte zu ~24h, wenn nur Minuten gewählt wurden). */
-const DEFAULT_AUCTION_DURATION: DurationValue = {
-  days: 0,
-  hours: 0,
-  minutes: 5,
-};
-
-function msToDuration(ms: number): DurationValue {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const days = Math.min(7, Math.floor(total / 86400));
-  const hours = Math.floor((total % 86400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  return { days, hours, minutes };
-}
-
 function AuctionForm({ onCancel }: { onCancel: () => void }) {
   const {
     user,
@@ -5950,6 +6036,7 @@ function AuctionForm({ onCancel }: { onCancel: () => void }) {
   const [form, setForm] = useState<AuctionFormState>(() =>
     auctionFormPrefill
       ? {
+          auftragsart: "Transport",
           startort: auctionFormPrefill.startort,
           zielort: auctionFormPrefill.zielort,
           empfVorname: auctionFormPrefill.empfVorname ?? "",
@@ -6076,13 +6163,12 @@ function AuctionForm({ onCancel }: { onCancel: () => void }) {
     if (auctionNotesContainContactInfo(form.notizen)) return;
     setShowError(false);
 
-    const totalSeconds =
-      duration.days * 86400 + duration.hours * 3600 + duration.minutes * 60;
-    const durationMs = Math.max(60_000, totalSeconds * 1000);
-    if (totalSeconds < 60) {
-      setSubmitError("Die Auktionsdauer muss mindestens 1 Minute betragen.");
+    const durationResult = durationValueToMs(duration);
+    if (!durationResult.ok) {
+      setSubmitError(durationResult.error);
       return;
     }
+    const durationMs = durationResult.durationMs;
     setSubmitError(null);
     const fromFiles =
       images.length > 0
@@ -6144,7 +6230,7 @@ function AuctionForm({ onCancel }: { onCancel: () => void }) {
               Auktion gestartet!
             </h3>
             <p className="mt-1 text-sm text-emerald-800">
-              Dein Transport von <strong>{form.startort}</strong> nach{" "}
+              Dein Auftrag von <strong>{form.startort}</strong> nach{" "}
               <strong>{form.zielort}</strong> ist live. Du erhältst eine
               Benachrichtigung, sobald das erste Gebot eingeht.
             </p>
@@ -6187,17 +6273,28 @@ function AuctionForm({ onCancel }: { onCancel: () => void }) {
 
   return (
     <form
-      id="transport-ausschreiben"
+      id="auftrag-erfassen"
       onSubmit={onSubmit}
       noValidate
       className="mt-8 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm anim-fade-up"
     >
       <div className="border-b border-slate-100 px-7 py-5 md:px-10">
         <h3 className="text-xl font-extrabold tracking-tight text-[var(--color-ink)] md:text-2xl">
-          Transport ausschreiben
+          Auftrag erfassen
         </h3>
         <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Sag uns, was wohin soll – Transporteure unterbieten sich live.
+          {form.auftragsart ? (
+            <>
+              <span className="inline-flex items-center rounded-full bg-[var(--color-brand-50)] px-2.5 py-0.5 text-xs font-semibold text-[var(--color-brand-700)] ring-1 ring-[var(--color-brand-100)]">
+                {form.auftragsart}
+              </span>
+              <span className="ml-2">
+                – Anbieter unterbieten sich live in der Auktion.
+              </span>
+            </>
+          ) : (
+            "Sag uns, was wohin soll – Anbieter unterbieten sich live in der Auktion."
+          )}
         </p>
       </div>
 
@@ -6453,12 +6550,7 @@ function AuctionForm({ onCancel }: { onCancel: () => void }) {
           )}
         </div>
 
-        <div>
-          <label className="block text-sm font-semibold text-slate-800">
-            Auktionsdauer
-          </label>
-          <DurationWheel value={duration} onChange={setDuration} />
-        </div>
+        <AuctionDurationField value={duration} onChange={setDuration} />
 
         <div>
           <label className="block text-sm font-semibold text-slate-800">
@@ -6613,16 +6705,29 @@ function useNow(intervalMs = 1000): number {
   return now;
 }
 
+function DashboardCompletedVisibilityHint({ className = "" }: { className?: string }) {
+  return (
+    <p
+      className={`text-sm leading-relaxed text-[var(--color-muted)] ${className}`.trim()}
+    >
+      Abgeschlossene Aufträge werden nach 3 Tagen automatisch aus dieser Ansicht
+      ausgeblendet. Die Daten bleiben gespeichert – sie werden nur nicht mehr
+      angezeigt.
+    </p>
+  );
+}
+
 function MyAuctionsList() {
-  const { user, auctions, viewAuctionDetail, goToAuctionForm } = useAuth();
+  const { user, auctions, viewAuctionDetail, openAuftragErfassen } = useAuth();
   const now = useNow(1000);
   /* RLS liefert Auftraggebern aus Supabase ohnehin nur eigene Auktionen.
    * Im Mock-Modus filtern wir lokal über den Benutzernamen. */
   const mine = !user
     ? []
-    : useSupabase && user.role === "auftraggeber"
-      ? auctions
-      : auctions.filter((a) => a.ownerUsername === user.username);
+    : (useSupabase && user.role === "auftraggeber"
+        ? auctions
+        : auctions.filter((a) => a.ownerUsername === user.username)
+      ).filter((a) => sbAukt.isDashboardVisibleAuction(a, now));
 
   if (mine.length === 0) {
     return (
@@ -6637,15 +6742,15 @@ function MyAuctionsList() {
           Du hast noch keine Auktion gestartet.
         </h3>
         <p className="mx-auto mt-2 max-w-md text-sm text-[var(--color-muted)]">
-          Schreibe deinen ersten Transport aus – Transporteure unterbieten sich
-          live.
+          Erfasse deinen ersten Auftrag – Anbieter unterbieten sich live in der
+          Auktion.
         </p>
         <button
           type="button"
-          onClick={() => goToAuctionForm()}
+          onClick={() => openAuftragErfassen()}
           className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-accent-500)] px-7 py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 hover:bg-[var(--color-accent-600)] transition-colors btn-action-shine"
         >
-          Jetzt Transport ausschreiben
+          Jetzt Auftrag erfassen
           <ArrowRight className="size-4" />
         </button>
       </div>
@@ -6667,13 +6772,15 @@ function MyAuctionsList() {
         </div>
         <button
           type="button"
-          onClick={() => goToAuctionForm()}
+          onClick={() => openAuftragErfassen()}
           className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-accent-500)] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-orange-900/30 hover:bg-[var(--color-accent-600)] transition-colors btn-action-shine"
         >
-          Neuer Transport
+          Neuer Auftrag
           <ArrowRight className="size-4" />
         </button>
       </div>
+
+      <DashboardCompletedVisibilityHint className="mt-4" />
 
       <div className="mt-6 grid gap-4 md:grid-cols-2">
         {mine.map((a) => (
@@ -6750,10 +6857,11 @@ function AuctionCard({
           <div className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
             Auftrag #{auction.id}
           </div>
+          <div className="mt-2">
+            <DienstleistungTypBadge auction={auction} size="md" />
+          </div>
           <div className="mt-2 flex items-center gap-2 text-sm">
-            <span className="grid size-6 place-items-center rounded-md bg-[var(--color-brand-50)] text-[var(--color-brand-700)]">
-              <Truck className="size-3.5" />
-            </span>
+            <DienstleistungTypIconBox auction={auction} size="sm" />
             <div className="min-w-0 truncate font-semibold text-slate-900">
               {auction.startort}{" "}
               <span className="mx-1 text-slate-400">→</span>{" "}
@@ -6972,14 +7080,13 @@ function AuctionDetail() {
         <div className="absolute -inset-6 -z-10 rounded-[32px] bg-gradient-to-br from-[var(--color-brand-700)]/10 to-transparent blur-2xl" />
         <div className="rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
           <div className="rounded-[22px] p-6 md:p-8">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="grid size-8 place-items-center rounded-lg bg-[var(--color-brand-50)] text-[var(--color-brand-700)]">
-                  <Truck className="size-4" />
-                </span>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <DienstleistungTypIconBox auction={auction} />
                 <div className="text-xs font-medium text-slate-500">
                   Auftrag #{auction.id}
                 </div>
+                <DienstleistungTypBadge auction={auction} size="md" />
               </div>
               <StatusBadge status={status} />
             </div>
@@ -7022,6 +7129,8 @@ function AuctionDetail() {
               )}
             </div>
 
+            <AuftragServiceDetailsView auction={auction} />
+
             {(status === "live" || status === "keine-gebote") && (
               <div className="mt-5 rounded-2xl bg-gradient-to-br from-[var(--color-brand-700)] to-[var(--color-brand-800)] p-5 text-white">
                 <div className="flex items-baseline justify-between gap-4">
@@ -7060,7 +7169,7 @@ function AuctionDetail() {
                     {auction.bids.length}{" "}
                     {auction.bids.length === 1 ? "Gebot" : "Gebote"}
                   </span>
-                  <span>Startpreis: CHF {auction.startPrice}</span>
+                  <span>{formatSessionStartpreisLabel(auction)}</span>
                 </div>
               </div>
             )}
@@ -7261,7 +7370,7 @@ function AuftragQrNachErteilung({ auction }: { auction: Auction }) {
       <p className="mt-3 max-w-md text-center text-sm text-slate-600">
         {isAppTestMode()
           ? "Testmodus: QR mit Dummy-Daten (reale Übergabe im Live-Betrieb mit authentischem Code)."
-          : "Leite diesen QR-Code an den Empfänger der Ware weiter. Er wird bei der Übergabe vom Transporteur gescannt."}
+          : "Leite diesen QR-Code an den Empfänger weiter. Er wird bei der Übergabe vom Anbieter gescannt."}
       </p>
     </div>
   );
@@ -7357,7 +7466,6 @@ function AwardedSection({
   refreshAuctions: () => Promise<void>;
   completePendingPaymentMock: (anzeigeId: string) => void;
 }) {
-  const { user } = useAuth();
   const mockInfo = useMemo(
     () => getTransporterInfo(awardedBid.initials),
     [awardedBid.initials],
@@ -7369,6 +7477,7 @@ function AwardedSection({
   });
   const [payBusy, setPayBusy] = useState(false);
   const [payErr, setPayErr] = useState<string | null>(null);
+  const [contactTransporteurOpen, setContactTransporteurOpen] = useState(false);
   const [payUi, setPayUi] = useState<"idle" | "test_modal" | "simulate_modal">(
     "idle",
   );
@@ -7545,44 +7654,25 @@ function AwardedSection({
     setPayBusy(true);
     try {
       if (useSupabase && supabase) {
-        let ok = false;
-        const r = await sbAukt.auctionZahlungSimulate(auction.id);
+        const r = await sbAukt.auctionZahlungSimulate(
+          auction.id,
+          auction.auctionUuid,
+        );
         if (r.ok) {
-          ok = true;
-        } else if (isAppTestMode() && user?.userId) {
-          const qrTok =
-            typeof crypto !== "undefined" && "randomUUID" in crypto
-              ? crypto.randomUUID()
-              : null;
-          if (qrTok) {
-            const piSim = `pi_sim_${qrTok.replace(/-/g, "")}`;
-            const { data: rowUpd, error: uerr } = await supabase
-              .from("auktionen")
-              .update({
-                status: "bezahlt_simuliert",
-                qr_token: qrTok,
-                payment_intent_id: piSim,
-              })
-              .eq("anzeige_id", auction.id.trim())
-              .eq("auftraggeber_id", user.userId)
-              .eq("status", "pending_payment")
-              .select("anzeige_id")
-              .maybeSingle();
-            if (!uerr && rowUpd) ok = true;
-            else
-              console.warn(
-                "[AwardedSection] simulate payment client fallback",
-                uerr,
-              );
-          }
-        }
-        if (ok) {
           await refreshAuctions();
-          void supabase.functions.invoke("auftrag-qr-email", {
-            body: { anzeige_id: auction.id },
-          });
+          try {
+            await invokeFunctionWithAuth("auftrag-qr-email", {
+              anzeige_id: auction.id,
+            });
+          } catch {
+            /* QR-E-Mail optional (Edge Function evtl. nicht deployed) */
+          }
         } else {
-          setPayErr("Zahlung konnte nicht bestätigt werden.");
+          setPayErr(
+            r.error
+              ? `Zahlung konnte nicht bestätigt werden (${r.error}).`
+              : "Zahlung konnte nicht bestätigt werden.",
+          );
         }
       } else {
         completePendingPaymentMock(auction.id);
@@ -7595,6 +7685,13 @@ function AwardedSection({
 
   const subject = encodeURIComponent(
     `Auftrag ${auction.id}: ${auction.startort} → ${auction.zielort}`,
+  );
+
+  const transporteurTelefon = info.telefon.replace(/\s+/g, "");
+  const transporteurTelefonGueltig =
+    transporteurTelefon.length > 0 && transporteurTelefon !== "—";
+  const smsBody = encodeURIComponent(
+    `Hallo, ich bin Auftraggeber für Transportauftrag ${auction.id} (${auction.startort} → ${auction.zielort}). Bitte melden Sie sich bezüglich Abholung und Übergabe.`,
   );
 
   const closePayModal = () => {
@@ -7679,29 +7776,102 @@ function AwardedSection({
             </dl>
 
             {showHandoverQr && (
-              <p className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-sm font-medium text-emerald-900">
-                {auction.auctionStatus === "bezahlt_simuliert"
-                  ? "Zahlung erfolgreich simuliert – Dein QR-Code wird jetzt generiert."
-                  : "Zahlung erfolgreich – Dein QR-Code wird jetzt generiert."}
-              </p>
+              <>
+                <p className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-sm font-medium text-emerald-900">
+                  {auction.auctionStatus === "bezahlt_simuliert"
+                    ? "Zahlung erfolgreich simuliert – Dein QR-Code wird jetzt generiert."
+                    : "Zahlung erfolgreich – Dein QR-Code wird jetzt generiert."}
+                </p>
+                <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                  📲 Wichtig: Leite diesen QR-Code an den Empfänger weiter
+                  (z. B. per E-Mail oder WhatsApp). Der Anbieter scannt ihn
+                  bei der Übergabe.
+                </p>
+              </>
             )}
 
             <p className="mt-4 rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-              Der Transporteur wurde per Benachrichtigung und E-Mail über den
+              Der Anbieter wurde per Benachrichtigung und E-Mail über den
               Zuschlag informiert.
             </p>
 
             <div className="mt-4 flex flex-wrap gap-2">
-              <a
-                href={`mailto:${info.email}?subject=${subject}`}
+              <button
+                type="button"
+                onClick={() => setContactTransporteurOpen(true)}
                 className="inline-flex items-center gap-2 rounded-full bg-[var(--color-brand-700)] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[var(--color-brand-800)] btn-action-shine"
               >
-                Transporteur kontaktieren
+                Anbieter kontaktieren
                 <ArrowRight className="size-4" />
-              </a>
+              </button>
             </div>
           </div>
           {showHandoverQr && <AuftragQrNachErteilung auction={auction} />}
+        </div>
+      )}
+
+      {contactTransporteurOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setContactTransporteurOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setContactTransporteurOpen(false);
+          }}
+          role="presentation"
+        >
+          <div
+            className="w-full max-w-sm overflow-hidden rounded-3xl border border-slate-200/90 bg-white shadow-2xl shadow-slate-900/15 ring-1 ring-black/5"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contact-transporteur-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h3
+                id="contact-transporteur-title"
+                className="text-base font-bold text-slate-900"
+              >
+                Anbieter kontaktieren
+              </h3>
+              <p className="mt-1 text-sm text-slate-600">{info.kontakt}</p>
+              {transporteurTelefonGueltig && (
+                <p className="mt-0.5 text-sm tabular-nums text-slate-500">
+                  {info.telefon}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-2 p-5">
+              {transporteurTelefonGueltig ? (
+                <>
+                  <a
+                    href={`tel:${transporteurTelefon}`}
+                    className="inline-flex w-full items-center justify-center rounded-xl bg-[var(--color-brand-700)] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[var(--color-brand-800)]"
+                    onClick={() => setContactTransporteurOpen(false)}
+                  >
+                    Anrufen
+                  </a>
+                  <a
+                    href={`sms:${transporteurTelefon}?body=${smsBody}`}
+                    className="inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50"
+                    onClick={() => setContactTransporteurOpen(false)}
+                  >
+                    SMS
+                  </a>
+                </>
+              ) : (
+                <p className="text-center text-sm text-slate-600">
+                  Keine Telefonnummer hinterlegt.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => setContactTransporteurOpen(false)}
+                className="mt-1 text-sm font-medium text-slate-500 underline-offset-2 hover:underline"
+              >
+                Schliessen
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -7857,7 +8027,7 @@ function RejectedSection({
         Du hast alle Gebote abgelehnt.
       </h4>
       <p className="mt-1 text-sm text-slate-600">
-        Du kannst diese Auktion in 60 Minuten erneut starten. Die Transporteure
+        Du kannst diese Auktion in 60 Minuten erneut starten. Die Anbieter
         werden über die Ablehnung nicht informiert.
       </p>
 
@@ -7945,126 +8115,6 @@ function DimensionField({
         <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-slate-400">
           {unit}
         </span>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- DURATION WHEEL (iOS-style, 3 columns) ---------- */
-const WHEEL_ITEM = 44;
-const WHEEL_HEIGHT = 5 * WHEEL_ITEM;
-const WHEEL_PAD = WHEEL_HEIGHT / 2 - WHEEL_ITEM / 2;
-
-function DurationWheel({
-  value,
-  onChange,
-}: {
-  value: DurationValue;
-  onChange: (v: DurationValue) => void;
-}) {
-  return (
-    <div className="mt-2 rounded-2xl border border-slate-200 bg-[var(--color-surface-alt)] p-5">
-      <div className="flex items-start justify-center gap-3 sm:gap-5">
-        <WheelColumn
-          label="Tage"
-          max={7}
-          value={value.days}
-          onValueChange={(v) => onChange({ ...value, days: v })}
-        />
-        <WheelColumn
-          label="Stunden"
-          max={23}
-          value={value.hours}
-          onValueChange={(v) => onChange({ ...value, hours: v })}
-        />
-        <WheelColumn
-          label="Minuten"
-          max={59}
-          value={value.minutes}
-          onValueChange={(v) => onChange({ ...value, minutes: v })}
-        />
-      </div>
-      <p className="mt-3 text-center text-xs text-slate-500">
-        Wischen oder scrollen, um die Dauer einzustellen.
-      </p>
-    </div>
-  );
-}
-
-function WheelColumn({
-  label,
-  max,
-  value,
-  onValueChange,
-}: {
-  label: string;
-  max: number;
-  value: number;
-  onValueChange: (v: number) => void;
-}) {
-  const scroller = useRef<HTMLDivElement>(null);
-  const t = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const v = Math.min(max, Math.max(0, value));
-    el.scrollTop = v * WHEEL_ITEM;
-  }, [max, value]);
-
-  const handleScroll = () => {
-    if (t.current) clearTimeout(t.current);
-    t.current = setTimeout(() => {
-      const el = scroller.current;
-      if (!el) return;
-      const y = el.scrollTop;
-      const v = Math.min(max, Math.max(0, Math.round(y / WHEEL_ITEM)));
-      el.scrollTo({ top: v * WHEEL_ITEM, behavior: "smooth" });
-      onValueChange(v);
-    }, 100);
-  };
-
-  return (
-    <div className="flex flex-col items-center">
-      <span className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-        {label}
-      </span>
-      <div
-        className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner"
-        style={{ width: 88, height: WHEEL_HEIGHT }}
-        role="group"
-        aria-label={label}
-      >
-        <div
-          className="pointer-events-none absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 border-y-2 border-[var(--color-brand-700)]/70"
-          style={{ height: WHEEL_ITEM }}
-        />
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-white to-transparent"
-          aria-hidden
-        />
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-10 bg-gradient-to-t from-white to-transparent"
-          aria-hidden
-        />
-        <div
-          ref={scroller}
-          onScroll={handleScroll}
-          className="wheel-scroll h-full w-full snap-y snap-mandatory overflow-y-auto scroll-smooth"
-          style={{ scrollbarWidth: "none" }}
-        >
-          <div style={{ height: WHEEL_PAD, flexShrink: 0 }} aria-hidden />
-          {Array.from({ length: max + 1 }, (_, n) => (
-            <div
-              key={n}
-              className="flex snap-center snap-always items-center justify-center font-mono text-2xl font-bold tabular-nums text-[var(--color-ink)]"
-              style={{ height: WHEEL_ITEM, minHeight: WHEEL_ITEM }}
-            >
-              {String(n).padStart(2, "0")}
-            </div>
-          ))}
-          <div style={{ height: WHEEL_PAD, flexShrink: 0 }} aria-hidden />
-        </div>
       </div>
     </div>
   );
@@ -8258,7 +8308,7 @@ function TransporteurInfoModal({
 
   const title =
     kind === "werden"
-      ? "Wie werde ich Transporteur?"
+      ? "Wie werde ich Anbieter?"
       : kind === "vorteile"
         ? "Vorteile für Fahrer"
         : "Kosten & Provision";
@@ -8267,7 +8317,7 @@ function TransporteurInfoModal({
     kind === "werden" ? (
       <div className="space-y-4 text-sm leading-relaxed text-slate-600 md:text-base">
         <p>
-          Auf 321 meins werden nur <strong className="font-semibold text-slate-900">verifizierte Transporteure</strong> zugelassen – damit Auftraggeber und Fahrer sich auf dieselbe Qualität verlassen können.
+          Auf 321 meins werden nur <strong className="font-semibold text-slate-900">verifizierte Anbieter</strong> zugelassen – damit Auftraggeber und Anbieter sich auf dieselbe Qualität verlassen können.
         </p>
         <ul className="list-disc space-y-2 pl-5">
           <li>
@@ -8296,13 +8346,13 @@ function TransporteurInfoModal({
           </li>
         </ul>
         <p className="text-slate-500">
-          Bereit? Wähle im Login die Rolle Transporteur und lege dein Profil in wenigen Minuten an.
+          Bereit? Wähle im Login die Rolle Anbieter und lege dein Profil in wenigen Minuten an.
         </p>
       </div>
     ) : kind === "vorteile" ? (
       <div className="space-y-4 text-sm leading-relaxed text-slate-600 md:text-base">
         <p>
-          321 meins verbindet Auftraggeber und Transporteure –{" "}
+          321 meins verbindet Auftraggeber und Anbieter –{" "}
           <strong className="font-semibold text-slate-900">live, fair und ohne Vermittlungs-Bingo</strong>. Als Fahrer profitierst du von einem klaren, digitalen Ablauf.
         </p>
         <ul className="list-disc space-y-2 pl-5">
@@ -8338,7 +8388,7 @@ function TransporteurInfoModal({
       <div className="space-y-4 text-sm leading-relaxed text-slate-600 md:text-base">
         <p>
           Auf 321 meins soll klar sein,{" "}
-          <strong className="font-semibold text-slate-900">womit du als Transporteur rechnest</strong> – ohne Überraschungen im Kleingedruckten.
+          <strong className="font-semibold text-slate-900">womit du als Anbieter rechnest</strong> – ohne Überraschungen im Kleingedruckten.
         </p>
         <ul className="list-disc space-y-2 pl-5">
           <li>
@@ -8419,13 +8469,13 @@ function FooterTransporteureCol({
     kind: Exclude<TransporteurFooterModalKind, null>;
     label: string;
   }[] = [
-    { kind: "werden", label: "Wie werde ich Transporteur?" },
+    { kind: "werden", label: "Wie werde ich Anbieter?" },
     { kind: "vorteile", label: "Vorteile für Fahrer" },
     { kind: "kosten", label: "Kosten & Provision" },
   ];
   return (
     <div>
-      <h4 className="text-sm font-semibold text-slate-900">Transporteure</h4>
+      <h4 className="text-sm font-semibold text-slate-900">Anbieter</h4>
       <ul className="mt-4 space-y-2.5">
         {items.map(({ kind, label }) => (
           <li key={kind}>
@@ -8454,8 +8504,8 @@ function Footer() {
         <div className="md:col-span-2">
           <Logo />
           <p className="mt-4 max-w-sm text-sm leading-relaxed text-slate-600">
-            321 meins ist der Schweizer Marktplatz für faire, transparente
-            Transport-Auktionen. Live. Sicher. Ohne versteckte Kosten.
+            321 meins ist der Schweizer Marktplatz für Umzug, Reinigung und
+            Transport – live per Auktion. Fair. Sicher. Ohne versteckte Kosten.
           </p>
         </div>
 
@@ -8668,6 +8718,25 @@ function User({ className }: IconProps) {
     >
       <circle cx="12" cy="8" r="4" />
       <path d="M4 21a8 8 0 0 1 16 0" />
+    </svg>
+  );
+}
+
+function Home({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.5V21h14V9.5" />
+      <path d="M9.5 21v-6h5v6" />
     </svg>
   );
 }

@@ -1,9 +1,10 @@
--- E-Mail bei Änderung von transporteure.verifiziert (via Edge Function + Resend).
+-- E-Mail bei Änderung von transporteure.verifiziert (via Edge Function + Infomaniak SMTP).
 -- Einmalig konfigurieren (SQL Editor, Rolle postgres), nachdem die Function deployed ist:
 --   UPDATE public.webhook_runtime_config SET
 --     transporteur_verifiziert_url = 'https://<PROJEKTREF>.supabase.co/functions/v1/transporteur-verifiziert-email',
 --     transporteur_verifiziert_secret = '<gleicher Wert wie Secret TRANSPORTEUR_VERIFIZIERT_WEBHOOK_SECRET>';
--- Edge Secrets: TRANSPORTEUR_VERIFIZIERT_WEBHOOK_SECRET, RESEND_API_KEY, optional RESEND_FROM.
+-- Edge Secrets: TRANSPORTEUR_VERIFIZIERT_WEBHOOK_SECRET, INFOMANIAK_SMTP_PASS (App-Passwort).
+-- Optional für Dry-Run ohne Versand: VITE_MOCK=true (lokal / Staging).
 
 CREATE TABLE IF NOT EXISTS public.webhook_runtime_config (
   id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),

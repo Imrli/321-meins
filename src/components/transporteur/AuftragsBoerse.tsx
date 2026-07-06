@@ -48,7 +48,7 @@ export function AuftragsBoerse() {
             const meins = userId ? store.getLetztesEigenesGebot(a.id, userId) : null;
             return (
               <li key={a.id} className="card-321">
-                <p className="text-xs font-medium uppercase text-[#6B7280]">{a.transport_art}</p>
+                <p className="text-xs font-medium uppercase text-[#6B7280]">{a.dienstleistung_typ}</p>
                 <p className="mt-1 font-medium text-[#1F2937]">
                   {a.beschreibung?.slice(0, 200)}
                   {a.beschreibung && a.beschreibung.length > 200 ? "…" : ""}

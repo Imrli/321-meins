@@ -1,3 +1,9 @@
+import {
+  logDryRunTransporteurMail,
+  sendTransporteurInfomaniakMail,
+  transporteurSmtpIsDryRun,
+} from "../_shared/transporteurInfomaniakMail.ts";
+
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -10,33 +16,6 @@ const APPROVE_TEXT =
 const REJECT_SUBJECT = "Registrierung: Nachweis erforderlich";
 const REJECT_TEXT =
   "Vielen Dank für deine Registrierung. Leider konnten wir deinen Versicherungsnachweis nicht akzeptieren. Bitte sende uns eine gültige Versicherungspolice (keine Offerte, kein unleserliches Dokument), da nur so sichergestellt ist, dass der Versicherungsschutz tatsächlich besteht. Du kannst das Dokument in deinem Profil aktualisieren. Sobald uns der korrekte Nachweis vorliegt, schalten wir dein Konto umgehend frei.";
-
-async function sendResend(params: {
-  apiKey: string;
-  from: string;
-  to: string;
-  subject: string;
-  text: string;
-}): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: params.from,
-      to: [params.to],
-      subject: params.subject,
-      text: params.text,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    return { ok: false, error: `${res.status} ${body}` };
-  }
-  return { ok: true };
-}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -76,26 +55,28 @@ Deno.serve(async (req) => {
     });
   }
 
-  const resendKey = Deno.env.get("RESEND_API_KEY");
-  if (!resendKey) {
-    console.warn(
-      "transporteur-verifiziert-email: RESEND_API_KEY not set — skipping",
-    );
-    return new Response(
-      JSON.stringify({ ok: true, skipped: true, reason: "no_resend" }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
-  }
-
-  const from =
-    Deno.env.get("RESEND_FROM") ?? "321 meins <onboarding@resend.dev>";
   const verifiziert = body.verifiziert === true;
   const subject = verifiziert ? APPROVE_SUBJECT : REJECT_SUBJECT;
   const text = verifiziert ? APPROVE_TEXT : REJECT_TEXT;
 
-  const r = await sendResend({
-    apiKey: resendKey,
-    from,
+  if (transporteurSmtpIsDryRun()) {
+    logDryRunTransporteurMail("transporteur-verifiziert-email", {
+      to: email,
+      subject,
+      text,
+    });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        skipped: true,
+        reason: "dry_run",
+        via: "console",
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  const r = await sendTransporteurInfomaniakMail({
     to: email,
     subject,
     text,
@@ -108,7 +89,10 @@ Deno.serve(async (req) => {
     });
   }
 
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+  return new Response(
+    JSON.stringify({ ok: true, via: "infomaniak_smtp" }),
+    {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    },
+  );
 });

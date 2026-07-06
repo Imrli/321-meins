@@ -52,7 +52,7 @@ function readDb(): MockDb {
         const a: Auftrag = {
           id,
           kunde_id: String(row.kunde_id),
-          transport_art: "Sonstiges",
+          dienstleistung_typ: "transport",
           beschreibung: (row.beschreibung as string) ?? null,
           notizen: null,
           bilder: (row.bilder as string[]) ?? [],
@@ -96,19 +96,26 @@ function mapLegacyStatus(s: string): AuftragStatus {
 
 function migrateAuftraege(db: MockDb) {
   for (const a of db.auftraege) {
-    if (!("transport_art" in a) || (a as Auftrag).transport_art === undefined) {
-      (a as Auftrag & { transport_art?: string }).transport_art = "Sonstiges";
+    const legacy = a as Auftrag & { transport_art?: string };
+    if (!a.dienstleistung_typ) {
+      a.dienstleistung_typ =
+        legacy.transport_art === "Sonstiges" || !legacy.transport_art
+          ? "transport"
+          : legacy.transport_art;
     }
+    delete legacy.transport_art;
     if (!("anfrage_key" in a) || !(a as Auftrag).anfrage_key) {
       a.anfrage_key = `legacy|${a.id}`;
     }
     if (a.wiederholbar_ab === undefined) a.wiederholbar_ab = null;
-    const legacy = a as Auftrag & { countdown_minuten?: number };
-    if (legacy.countdown_dauer_sekunden == null) {
-      legacy.countdown_dauer_sekunden =
-        legacy.countdown_minuten != null ? legacy.countdown_minuten * 60 : 600;
+    const legacyCountdown = a as Auftrag & { countdown_minuten?: number };
+    if (legacyCountdown.countdown_dauer_sekunden == null) {
+      legacyCountdown.countdown_dauer_sekunden =
+        legacyCountdown.countdown_minuten != null
+          ? legacyCountdown.countdown_minuten * 60
+          : 600;
     }
-    delete legacy.countdown_minuten;
+    delete legacyCountdown.countdown_minuten;
     if (a.status === "gebote_fertig" as unknown as AuftragStatus) a.status = "vermittelt";
     if (a.status === "angenommen" as unknown) a.status = "vermittelt";
     if (a.status === "abgelehnt" as unknown) a.status = "leer_abgelaufen";
@@ -320,7 +327,7 @@ export function mockStartAuftrag(input: {
   const a: Auftrag = {
     id: crypto.randomUUID(),
     kunde_id: input.kundeId,
-    transport_art: input.transportArt.trim() || "Transport",
+    dienstleistung_typ: "transport",
     beschreibung: input.beschreibung.trim() || null,
     notizen: input.notizen.trim() || null,
     bilder: input.bilder,
@@ -358,7 +365,7 @@ export function mockWiederholeAuftrag(auftragId: string, kundeId: string, countd
   }
   return mockStartAuftrag({
     kundeId,
-    transportArt: src.transport_art,
+    transportArt: src.dienstleistung_typ,
     beschreibung: src.beschreibung ?? "",
     notizen: src.notizen ?? "",
     abholort: src.abholort ?? "",

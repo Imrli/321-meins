@@ -7,6 +7,31 @@ export type AuctionViewer = {
   username?: string;
 };
 
+/** Adressen in Umzugs-/Reinigungs-JSON nur als Ortsangabe (wie startort/zielort). */
+function stripServiceDetailAddresses(a: Auction): Auction {
+  let next = a;
+  if (next.umzugDetails) {
+    next = {
+      ...next,
+      umzugDetails: {
+        ...next.umzugDetails,
+        von: ortOeffentlich(next.umzugDetails.von),
+        nach: ortOeffentlich(next.umzugDetails.nach),
+      },
+    };
+  }
+  if (next.reinigungDetails) {
+    next = {
+      ...next,
+      reinigungDetails: {
+        ...next.reinigungDetails,
+        adresse: ortOeffentlich(next.reinigungDetails.adresse),
+      },
+    };
+  }
+  return next;
+}
+
 /** Gleiche Logik wie in der UI (Zuschlag / awardedBid). */
 export function transporteurHatZuschlagViewer(
   auction: Auction,
@@ -63,7 +88,7 @@ function stripTransporterPrePaymentKontakte(a: Auction): Auction {
   next.empfPlz = undefined;
   next.empfOrt = undefined;
   next.qrToken = undefined;
-  return next;
+  return stripServiceDetailAddresses(next);
 }
 
 /** Nach Zahlung: QR nur für Auftraggeber; ansonsten volle Kontextdaten für den Transporteur. */
@@ -92,7 +117,7 @@ function stripPrivateAddresses(a: Auction): Auction {
   next.empfPlz = undefined;
   next.empfOrt = undefined;
   next.qrToken = undefined;
-  return next;
+  return stripServiceDetailAddresses(next);
 }
 
 /**

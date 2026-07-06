@@ -1,6 +1,6 @@
 /** Nur Ortsname / Kurzbezeichnung – für öffentliche Transporteur-Ansichten. */
-export function ortOeffentlich(raw: string): string {
-  const s = raw.trim();
+export function ortOeffentlich(raw: string | null | undefined): string {
+  const s = String(raw ?? "").trim();
   if (!s) return "—";
   const parts = s
     .split(",")

@@ -41,7 +41,7 @@ function AuftragKarte({ a, kundeId }: { a: Auftrag; kundeId: string }) {
           <h3 className="text-base font-semibold text-[#1E3A5F]">
             {a.abholort} → {a.zielort}
           </h3>
-          <p className="caption-321">{a.transport_art}</p>
+          <p className="caption-321">{a.dienstleistung_typ}</p>
         </div>
         <span className="badge-321 shrink-0">{store.getStatusLabel(a.status)}</span>
       </div>

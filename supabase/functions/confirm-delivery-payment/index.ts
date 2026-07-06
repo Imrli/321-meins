@@ -420,7 +420,7 @@ Deno.serve(async (req) => {
 
   const { data: updated, error: updErr } = await admin
     .from("auktionen")
-    .update({ status: "bezahlt", qr_token: null })
+    .update({ status: "bezahlt", qr_token: null, freigegeben_am: new Date().toISOString() })
     .eq("id", row.id)
     .in("status", ["awarded", "bezahlt_simuliert"])
     .eq("qr_token", dbTok)

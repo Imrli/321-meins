@@ -15,14 +15,22 @@ if (-not (Test-Path (Join-Path $ProjectRoot ".git"))) {
 }
 
 $git = "C:\Program Files\Git\bin\git.exe"
-if (-not (Test-Path $git)) { $git = "git" }
+if (-not (Test-Path $git)) {
+    $git = "git"
+} else {
+    # gh ruft intern "git" per PATH auf; ohne Eintrag schlaegt repo create fehl.
+    $env:Path = "$(Split-Path -Parent $git);$env:Path"
+}
+
+$gh = Join-Path ${env:ProgramFiles} "GitHub CLI\gh.exe"
+if (-not (Test-Path $gh)) { $gh = "gh" }
 
 Set-Location $ProjectRoot
 
 # gh schreibt bei Fehler auf stderr; mit "Stop" wuerde das sonst abbrechen
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "SilentlyContinue"
-$null = gh auth status -h github.com 2>&1
+$null = & $gh auth status -h github.com 2>&1
 $authOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $prevEap
 
@@ -32,9 +40,11 @@ if (-not $authOk) {
     exit 1
 }
 
-$hasOrigin = $false
+$prevEap2 = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
 $null = & $git remote get-url origin 2>&1
-if ($?) { $hasOrigin = $true }
+$hasOrigin = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEap2
 
 if ($hasOrigin) {
     Write-Host "Remote 'origin' existiert bereits. Pushe..." -ForegroundColor Cyan
@@ -44,5 +54,5 @@ if ($hasOrigin) {
 }
 
 Write-Host "Erstelle privates Repo '321-meins' und pushe..." -ForegroundColor Cyan
-gh repo create 321-meins --private --source=. --remote=origin --push
+& $gh repo create 321-meins --private --source=. --remote=origin --push
 exit $LASTEXITCODE

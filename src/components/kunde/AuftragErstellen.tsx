@@ -100,7 +100,7 @@ export function AuftragErstellen() {
     <section className="card-321">
       <h2 className="title-section-321">Neue Auktion</h2>
       <p className="caption-321 mt-2">
-        Start- und Zielort, Art des Transports, Countdown wählen – dann Auktion starten. Nicht mehr
+        Start- und Zielort, Art des Auftrags, Countdown wählen – dann Auktion starten. Nicht mehr
         änderbar, sobald der Countdown läuft.
       </p>
       <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
@@ -115,7 +115,7 @@ export function AuftragErstellen() {
           </div>
         </div>
         <div>
-          <label className="label-321">Art des Transports</label>
+          <label className="label-321">Art des Auftrags</label>
           <select
             className="input-321"
             value={transportArt}

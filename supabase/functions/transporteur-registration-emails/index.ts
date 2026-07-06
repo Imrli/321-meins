@@ -1,4 +1,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import {
+  logDryRunTransporteurMail,
+  sendTransporteurInfomaniakMail,
+  transporteurSmtpIsDryRun,
+} from "../_shared/transporteurInfomaniakMail.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -7,33 +12,6 @@ const corsHeaders: Record<string, string> = {
 };
 
 const SUPPORT_EMAIL = "support@321-meins.ch";
-
-async function sendResend(params: {
-  apiKey: string;
-  from: string;
-  to: string;
-  subject: string;
-  text: string;
-}): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: params.from,
-      to: [params.to],
-      subject: params.subject,
-      text: params.text,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    return { ok: false, error: `${res.status} ${body}` };
-  }
-  return { ok: true };
-}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -76,57 +54,63 @@ Deno.serve(async (req) => {
     });
   }
 
-  const resendKey = Deno.env.get("RESEND_API_KEY");
-  if (!resendKey) {
-    console.warn(
-      "transporteur-registration-emails: RESEND_API_KEY not set — skipping send",
-    );
+  const transporterEmail = userData.user.email;
+  const mails = [
+    {
+      target: transporterEmail,
+      subject: "Deine Registrierung ist eingegangen",
+      text:
+        "Deine Registrierung ist bei uns eingegangen. Wir prüfen nun deine Unterlagen. Dies dauert in der Regel 1-2 Werktage.",
+    },
+    {
+      target: SUPPORT_EMAIL,
+      subject: "Neue Registrierung: Prüfung erforderlich",
+      text:
+        "Ein neuer Transporteur hat sich registriert und seinen Versicherungsnachweis hochgeladen. Bitte prüfe die Unterlagen im Supabase-Dashboard.",
+    },
+  ] as const;
+
+  if (transporteurSmtpIsDryRun()) {
+    for (const m of mails) {
+      logDryRunTransporteurMail("transporteur-registration-emails", {
+        to: m.target,
+        subject: m.subject,
+        text: m.text,
+      });
+    }
     return new Response(
-      JSON.stringify({ ok: true, skipped: true, reason: "no_resend_key" }),
+      JSON.stringify({
+        ok: true,
+        skipped: true,
+        reason: "dry_run",
+        via: "console",
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 
-  const from =
-    Deno.env.get("RESEND_FROM") ??
-    "321 meins <onboarding@resend.dev>";
-
-  const transporterEmail = userData.user.email;
   const results: { target: string; ok: boolean; error?: string }[] = [];
-
-  const r1 = await sendResend({
-    apiKey: resendKey,
-    from,
-    to: transporterEmail,
-    subject: "Deine Registrierung ist eingegangen",
-    text: "Deine Registrierung ist bei uns eingegangen. Wir prüfen nun deine Unterlagen. Dies dauert in der Regel 1-2 Werktage.",
-  });
-  results.push({
-    target: transporterEmail,
-    ok: r1.ok,
-    error: r1.error,
-  });
-
-  const r2 = await sendResend({
-    apiKey: resendKey,
-    from,
-    to: SUPPORT_EMAIL,
-    subject: "Neue Registrierung: Prüfung erforderlich",
-    text: "Ein neuer Transporteur hat sich registriert und seinen Versicherungsnachweis hochgeladen. Bitte prüfe die Unterlagen im Supabase-Dashboard.",
-  });
-  results.push({ target: SUPPORT_EMAIL, ok: r2.ok, error: r2.error });
-
-  for (const r of results) {
+  for (const m of mails) {
+    const r = await sendTransporteurInfomaniakMail({
+      to: m.target,
+      subject: m.subject,
+      text: m.text,
+    });
+    results.push({
+      target: m.target,
+      ok: r.ok,
+      error: r.ok ? undefined : r.error,
+    });
     if (!r.ok) {
       console.error(
         "transporteur-registration-emails: send failed",
-        r.target,
+        m.target,
         r.error,
       );
     }
   }
 
-  return new Response(JSON.stringify({ ok: true, results }), {
+  return new Response(JSON.stringify({ ok: true, results, via: "infomaniak_smtp" }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 });

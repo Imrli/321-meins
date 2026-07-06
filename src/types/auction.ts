@@ -1,3 +1,5 @@
+import type { DienstleistungTyp } from "./dienstleistungTyp";
+
 export type Bid = {
   initials: string;
   price: number;
@@ -14,6 +16,9 @@ export type Auction = {
   /** Supabase-PK; nur für API, nicht für UI-Texte nötig */
   auctionUuid?: string;
   ownerUsername: string;
+  /** DB: umzug | reinigung | umzug_reinigung | transport */
+  dienstleistungTyp?: DienstleistungTyp;
+  abgabegarantie?: boolean;
   startort: string;
   zielort: string;
   /** gesetzt, wenn ein Transporteur den Zuschlag erhalten hat (Supabase-PK) */
@@ -48,6 +53,8 @@ export type Auction = {
   startPrice: number;
   durationMs: number;
   startedAt: number;
+  /** Ende aus DB `endet_am` (UTC-Instant); Countdown/„live“ daran ausrichten. */
+  endsAt?: number;
   bids: Bid[];
   awardedAt?: number;
   awardedBid?: Bid;
@@ -56,9 +63,15 @@ export type Auction = {
   qrToken?: string;
   /** DB-Status: live | pending_payment | awarded | bezahlt_simuliert | rejected | geliefert | bezahlt … */
   auctionStatus?: string;
+  /** QR-Scan / Zahlungsfreigabe (Unix-ms); Dashboard-Sichtbarkeit 3 Tage danach */
+  freigegebenAt?: number;
+  umzugDetails?: import("./umzugDetails").UmzugDetails;
+  reinigungDetails?: import("./reinigungDetails").ReinigungDetails;
 };
 
 export type AuctionDraft = {
+  umzugDetails?: import("./umzugDetails").UmzugDetails;
+  reinigungDetails?: import("./reinigungDetails").ReinigungDetails;
   startort: string;
   zielort: string;
   empfVorname: string;
@@ -76,4 +89,6 @@ export type AuctionDraft = {
   lieferzeitpraeferenz?: "vormittags" | "nachmittags" | "flexibel";
   imageDataUrls?: string[];
   durationMs: number;
+  /** Kombi-Auftrag: expliziter Startpreis für die Live-Auktion (CHF) */
+  startPrice?: number;
 };
