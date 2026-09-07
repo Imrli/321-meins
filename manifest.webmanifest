@@ -2,7 +2,7 @@
   "name": "321 meins",
   "short_name": "321 meins",
   "description": "Schweizer Transport-Auktion – live, fair, günstig.",
-  "start_url": "./",
+  "start_url": "./?source=pwa",
   "scope": "./",
   "display": "standalone",
   "background_color": "#1A2A3A",

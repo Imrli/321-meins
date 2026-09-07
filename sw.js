@@ -56,7 +56,10 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url ?? "./";
+  const raw = event.notification.data?.url ?? "./";
+  const base = new URL(raw, self.registration.scope);
+  base.hash = "";
+  const url = base.pathname + base.search;
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
