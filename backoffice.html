@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de-CH">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="321 meins Backoffice" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#1A2A3A" />
+    <link rel="icon" type="image/png" href="favicon-32.png" />
+    <link rel="apple-touch-icon" href="favicon-32.png" />
+    <link rel="manifest" href="backoffice-manifest.webmanifest" />
+    <title>321 meins Backoffice</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: Inter, system-ui, sans-serif;
+        background: #f9fafb;
+        color: #1f2937;
+      }
+      .box {
+        text-align: center;
+        padding: 2rem;
+        max-width: 22rem;
+      }
+      p {
+        margin: 0.5rem 0 0;
+        font-size: 0.95rem;
+        color: #64748b;
+      }
+    </style>
+    <script>
+      (function () {
+        try {
+          localStorage.setItem("321meins-pwa-admin-hint", "1");
+        } catch (e) {
+          /* ignore */
+        }
+        var path = location.pathname || "/";
+        var root = "/";
+        var marker = "/backoffice.html";
+        var idx = path.indexOf(marker);
+        if (idx >= 0) {
+          root = path.slice(0, idx + 1);
+          if (!root.endsWith("/")) root += "/";
+        }
+        location.replace(location.origin + root + "#/admin");
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="box">
+      <strong>Backoffice wird geladen …</strong>
+      <p>Falls nichts passiert: <a href="./#/admin">hier tippen</a>.</p>
+    </div>
+  </body>
+</html>
