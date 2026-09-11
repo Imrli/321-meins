@@ -2,26 +2,15 @@
 <html lang="de-CH">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="321 meins Backoffice" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#1A2A3A" />
-    <link rel="icon" type="image/png" href="favicon-32.png" />
-    <link rel="apple-touch-icon" href="favicon-32.png" />
-    <link rel="manifest" href="backoffice-manifest.webmanifest" />
-    <title>321 meins Backoffice</title>
+    <meta http-equiv="refresh" content="0;url=backoffice/" />
     <script>
-      (function () {
-        try {
-          localStorage.setItem("321meins-pwa-admin-hint", "1");
-        } catch (e) {}
-        var root = location.pathname.replace(/\/backoffice\.html$/i, "") || "";
-        location.replace(location.origin + root + "/?backoffice=1");
-      })();
+      location.replace(
+        location.pathname.replace(/backoffice\.html.*$/i, "") + "backoffice/",
+      );
     </script>
+    <title>321 meins Backoffice</title>
   </head>
   <body>
-    <p>Backoffice wird geladen …</p>
+    <p><a href="backoffice/">Backoffice öffnen</a></p>
   </body>
 </html>
