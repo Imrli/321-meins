@@ -23,10 +23,30 @@
       rel="stylesheet"
     />
     <title>321 meins – Transport-Auktion live. Fair. Günstig.</title>
-    <script type="module" crossorigin src="./assets/index-CBzaV80h.js"></script>
+    <script type="module" crossorigin src="./assets/index-B_NtnySH.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-BxJTJhLn.css">
   </head>
   <body>
+    <script>
+      (function () {
+        try {
+          var isPwa =
+            window.navigator.standalone === true ||
+            (window.matchMedia &&
+              (window.matchMedia("(display-mode: standalone)").matches ||
+                window.matchMedia("(display-mode: fullscreen)").matches));
+          if (!isPwa) return;
+          var hash = (window.location.hash || "").trim();
+          if (hash && hash !== "#/" && hash !== "#") return;
+          if (window.localStorage.getItem("321meins-pwa-admin-hint") !== "1") return;
+          window.location.replace(
+            window.location.pathname + window.location.search + "#/admin",
+          );
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
     <div id="root"></div>
   </body>
 </html>
