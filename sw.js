@@ -1,6 +1,6 @@
 /* 321 meins – Service Worker (Web Push + App-Badge, iOS-PWA) */
 
-const SW_VERSION = "2026-09-11-pwa-admin-launch-v2";
+const SW_VERSION = "2026-09-11-pwa-ios-backoffice-v1";
 
 /**
  * Badge aus Push-Payload setzen (iOS: nur über Push + self.navigator.setAppBadge).

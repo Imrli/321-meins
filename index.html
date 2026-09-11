@@ -5,9 +5,10 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
     <link rel="icon" href="favicon-32.png" type="image/png" />
     <link rel="apple-touch-icon" href="favicon-32.png" />
-    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="manifest" href="manifest.webmanifest" id="321meins-manifest" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="321 meins" />
+    <meta name="apple-mobile-web-app-title" content="321 meins Backoffice" />
+    <script src="pwa-admin-boot.js"></script>
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1A2A3A" />
@@ -23,30 +24,10 @@
       rel="stylesheet"
     />
     <title>321 meins – Transport-Auktion live. Fair. Günstig.</title>
-    <script type="module" crossorigin src="./assets/index-B_NtnySH.js"></script>
+    <script type="module" crossorigin src="./assets/index-rFFQE6ca.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-BxJTJhLn.css">
   </head>
   <body>
-    <script>
-      (function () {
-        try {
-          var isPwa =
-            window.navigator.standalone === true ||
-            (window.matchMedia &&
-              (window.matchMedia("(display-mode: standalone)").matches ||
-                window.matchMedia("(display-mode: fullscreen)").matches));
-          if (!isPwa) return;
-          var hash = (window.location.hash || "").trim();
-          if (hash && hash !== "#/" && hash !== "#") return;
-          if (window.localStorage.getItem("321meins-pwa-admin-hint") !== "1") return;
-          window.location.replace(
-            window.location.pathname + window.location.search + "#/admin",
-          );
-        } catch (e) {
-          /* ignore */
-        }
-      })();
-    </script>
     <div id="root"></div>
   </body>
 </html>
