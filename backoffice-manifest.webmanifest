@@ -2,7 +2,7 @@
   "name": "321 meins Backoffice",
   "short_name": "Backoffice",
   "description": "Admin-Backoffice für 321 meins",
-  "start_url": "./backoffice.html",
+  "start_url": "./?backoffice=1",
   "scope": "./",
   "display": "standalone",
   "background_color": "#1A2A3A",
