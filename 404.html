@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de-CH">
+  <head>
+    <meta charset="UTF-8" />
+    <title>321 meins</title>
+    <script>
+      (function () {
+        var path = (location.pathname || "").replace(/\/+$/, "").toLowerCase();
+        if (path === "/admin" || path.indexOf("/admin/") === 0) {
+          location.replace("/backoffice/");
+          return;
+        }
+        if (path === "/backoffice" || path.indexOf("/backoffice/") === 0) {
+          location.replace("/backoffice/");
+          return;
+        }
+        location.replace("/");
+      })();
+    </script>
+  </head>
+  <body>
+    <p><a href="/">321 meins</a> · <a href="/backoffice/">Backoffice</a></p>
+  </body>
+</html>

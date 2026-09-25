@@ -24,8 +24,14 @@
     <title>321 meins Backoffice</title>
     <script>
       window.__321MEINS_FORCE_ADMIN__ = true;
+      (function () {
+        var path = (location.pathname || "").replace(/\/+$/, "") || "/";
+        if (path === "/admin") {
+          location.replace(location.origin + "/backoffice/" + location.search + location.hash);
+        }
+      })();
     </script>
-    <script type="module" crossorigin src="../assets/main-6dRnW20i.js"></script>
+    <script type="module" crossorigin src="../assets/main-BJnFuso7.js"></script>
     <link rel="stylesheet" crossorigin href="../assets/main-gCpAOT_8.css">
   </head>
   <body>
