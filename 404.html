@@ -7,7 +7,7 @@
       (function () {
         var path = (location.pathname || "").replace(/\/+$/, "").toLowerCase();
         if (path === "/admin" || path.indexOf("/admin/") === 0) {
-          location.replace("/backoffice/");
+          location.replace("/backoffice/" + location.search + location.hash);
           return;
         }
         if (path === "/backoffice" || path.indexOf("/backoffice/") === 0) {
