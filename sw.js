@@ -1,6 +1,6 @@
 /* 321 meins – Service Worker (Web Push + App-Badge, iOS-PWA) */
 
-const SW_VERSION = "2026-09-25-backoffice-base-fix-v1";
+const SW_VERSION = "2026-09-25-backoffice-gate-fix-v2";
 
 /**
  * Badge aus Push-Payload setzen (iOS: nur über Push + self.navigator.setAppBadge).
